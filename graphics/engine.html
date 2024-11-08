@@ -1,0 +1,835 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<title>CM20219 – Coursework 2 – WebGL</title>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+	<style>
+		body {
+			margin: 0;
+			overflow: hidden;
+			cursor: grab;
+		}
+
+		canvas {
+			width: 100%;
+			height: 100%;
+		}
+
+		#info {
+			position: absolute;
+			right: 10px;
+			z-index: 100;
+			display:block;
+			color: orange;
+		}
+	</style>
+</head>
+
+<body>
+	<div id="info"><h1 id="rpm"></h1>
+	
+	
+
+	<input style="position: absolute; right: 0px;" type="range" min="-500" max="200" value="0" class="slider" id="myRange" oninput="if(this.value == -500) { engine.angularVel = 0} else { engine.angularVel = Math.exp(parseFloat(this.value)/100)}"><br>
+
+	<input style="position: absolute; right: 0px; margin-top: 20px;" id="config" type="text" /><br>
+	<button  style="position: absolute; right: 0px;margin-top: 30px;" onclick="updateEngine()">GO</button>
+
+	</div>
+
+	<script src="./three-r134.js"></script>
+	<script src="./OBJLoader.js"></script>
+	<script>
+		"use strict"; // https://stackoverflow.com/q/1335851/72470
+
+
+		var conrod_model, piston_model, engine, cw_model = null
+
+		const objLoader = new THREE.OBJLoader()
+
+		// Used to check that both models are loaded
+		var load_count = 0
+
+		var conrod_offset = 7.53
+
+		// Update the engine configuration
+		function updateEngine() {
+			// Get the user's input from the field
+			var config = document.getElementById('config').value
+
+			// Cylinder offsets split by commas
+			var angles = config.split(",")
+
+			var cylinders = []
+
+			for(var i in angles) {
+				// Convert angle to radians
+				var angle = (parseFloat(angles[i]) / 360.0) * Math.PI * 2
+				cylinders.push(new Cylinder(new CylinderTimings(angle)))
+			}
+
+			// Remove the old engine
+			engine.removeFromScene()
+			var angVel = engine.angularVel
+
+			// Create the new engine
+			engine = new Engine(cylinders, scene)
+			engine.angularVel = angVel
+		}
+
+		objLoader.load('conrod.obj', function (obj) {
+			conrod_model = obj.children[0].geometry
+
+			// Offset the model so the small-end is the centre of the geometry
+			conrod_model.translate(0, 0, -conrod_offset)
+
+			if(load_count == 2) {
+				// Only start when all objects are loaded
+				init()
+				animate()
+			}
+
+			load_count += 1
+		})
+
+		objLoader.load('piston.obj', function (obj) {
+			piston_model = obj.children[0].geometry
+
+			if(load_count == 2) {
+				// Only start when all objects are loaded
+				init()
+				animate()
+			}
+
+			load_count += 1
+		})
+
+		objLoader.load('counterweights.obj', function (obj) {
+			cw_model = obj.children[0].geometry
+			cw_model.scale(0.65, 0.4, 0.65) // width, radius, thickness
+			cw_model.center()
+			//cw_model.translate(0, 5, 0)
+
+			if(load_count == 2) {
+				// Only start when all objects are loaded
+				init()
+				animate();
+			}
+
+			load_count += 1
+		})
+
+		// Geometry for the outside of the cylinder
+		var cyl_model = new THREE.CylinderGeometry(4.4,4.4,12, 16, 1, true, 0, Math.PI);
+
+		// Global variables that are available in all functions.
+		// Note: You can add your own here, e.g. to store the rendering mode.
+		var  cameraController, scene, renderer, mesh;
+
+		var camera_velocity_s;
+
+		// Materials for cylinder
+		var cyl_dull_metal = new THREE.MeshPhongMaterial({
+			color: 0xacacac,
+			shininess: 100
+		})
+
+		var cyl_shiny_metal = new THREE.MeshPhongMaterial({
+			color: 0xffffff,
+			shininess: 100
+		})
+
+		var cyl_lever_metal = new THREE.MeshPhongMaterial({
+			color: 0xff0000,
+			shininess: 100
+		})
+
+		var cyl_metal = new THREE.MeshPhongMaterial({
+			color: 0xfcfcfc,
+			shininess: 100,
+			side: THREE.DoubleSide
+		})
+
+		
+		// Rundown of what happens when
+		// 0  ->  pi  - suck
+		// pi ->  2pi - squeeze
+		// 2pi -> 3pi - bang
+		// 3pi -> 4pi - whoosh
+		
+		
+		// Stores the config for a cylinder
+		class CylinderTimings {
+			constructor(offset) {
+				this.ignition = 2 * Math.PI
+				this.intake = 0
+				this.exhaust = 3 * Math.PI
+				this.offset = offset
+				this.dwell = Math.PI / 1.9
+				this.crank_radius = 3.5
+			}
+		}
+
+		class Engine {
+			constructor(cylinders, scene) {
+				this.cylinders = cylinders
+
+				this.addToScene(scene)
+
+				// Angular position is between 0 and 4pi, as one engine cycle is two rotations
+				this.angularPos = 0
+				this.angularVel = Math.PI/32
+
+				this.update_count = 0
+				this.lastStep = Date.now()
+				
+			}
+
+			addToScene(scene) {
+				this.scene = scene
+
+				for(var i in this.cylinders) {
+					this.cylinders[i].addToScene(scene)
+				}
+			}
+
+			removeFromScene() {
+				for(var i in this.cylinders) {
+					this.cylinders[i].removeFromScene()
+				}
+
+				this.scene = null
+			}
+
+			animate() {
+
+				// Update the rev counter every 24 steps
+				if(this.update_count == 24) {
+
+					var step = Date.now()
+
+					// Take an average time per step
+					var minutes_per_step = (step - this.lastStep) / this.update_count
+
+					// Calculate revolutions per step
+					var revs_per_step = this.angularVel / (2*Math.PI)
+
+					// Find the revolutions per minute.
+					var rpm = ((revs_per_step / minutes_per_step) * 60000).toFixed(0)
+
+					document.getElementById('rpm').innerHTML = rpm  + " RPM"
+
+					this.lastStep = step
+					this.update_count = 0
+				} else {
+					this.update_count += 1
+				}
+
+				// Increment angular position
+				this.angularPos += this.angularVel
+				
+				// Loop cycle back round
+				if(this.angularPos >= 4*Math.PI) {
+					this.angularPos -= (4*Math.PI) 
+				}
+
+				var startPos = new THREE.Vector3(0, 0, 0)
+
+				for(var i in this.cylinders) {
+					// Animate each cylinder
+					this.cylinders[i].animate(this.angularPos, startPos)
+					startPos.add(new THREE.Vector3(0, 0, this.cylinders[i].width))
+				}
+
+			}
+			get width() {
+				var result = 0
+
+				// Sum width from each cylinder
+				for(var i in this.cylinders) {
+					result += this.cylinders[i].width
+				}
+
+				return result
+			}
+		}
+
+		var o = 0.5
+
+		class Cylinder {
+			constructor(timings) {
+				this.timings = timings
+
+				// Create the needed objects
+
+				this.piston = new THREE.Mesh(
+					piston_model,
+					cyl_dull_metal
+				);
+
+				this.conrod = new THREE.Mesh(
+					conrod_model,
+					cyl_dull_metal
+				);
+
+				this.crankshaft_pedal = new THREE.Mesh(
+					new THREE.CylinderGeometry(3, 3, 7.5, 32),
+					cyl_shiny_metal
+				)
+
+				this.crankshaft_main_f = new THREE.Mesh(
+					new THREE.CylinderGeometry(3.2, 3.2, 1, 32),
+					cyl_shiny_metal
+				)
+
+				this.crankshaft_main_c = new THREE.Mesh(
+					new THREE.CylinderGeometry(3.2, 3.2, 1, 32),
+					cyl_shiny_metal
+				)
+
+				this.crankshaft_lever_f = new THREE.Mesh(
+					cw_model,
+					cyl_lever_metal
+				)
+
+				this.crankshaft_lever_c = new THREE.Mesh(
+					cw_model,
+					cyl_lever_metal
+				)
+
+				this.cylinder = new THREE.Mesh(
+					cyl_model,
+					cyl_metal
+				);
+
+				this.bottom_end = 8.28
+				this.top_end = 6.28
+				
+				// Maximum rotation of conrod
+				this.beta = Math.atan(this.timings.crank_radius / (this.bottom_end + this.top_end))
+
+				// Rotate into the correct direction
+				this.piston.rotation.x = -Math.PI/2
+				this.conrod.rotation.x = -Math.PI/2
+				this.crankshaft_pedal.rotation.x = -Math.PI/2
+				this.cylinder.rotation.y = Math.PI
+				this.crankshaft_main_f.rotation.x = -Math.PI/2
+				this.crankshaft_main_c.rotation.x = -Math.PI/2
+
+				this.crankshaft_lever_c.rotation.x = -Math.PI/2
+				this.crankshaft_lever_f.rotation.x = -Math.PI/2
+
+				// Create point light for spark effect
+				this.spark = new THREE.PointLight(0xcc7400, 1000, 5)
+
+				this.parent = null
+
+				this.states = {
+					sucked: -1,
+					squeezed: -1,
+					banged: -1,
+					whoosed: -1,
+					last_theta: 0
+				}
+			}	
+			animate(th, startPos) {
+				var theta = th + this.timings.offset
+
+				if(theta > 4*Math.PI) {
+					theta -= 4*Math.PI
+				}
+
+				if(theta < this.states.last_theta) {
+					this.states = {
+						sucked: -1,
+						squeezed: -1,
+						banged: -1,
+						whoosed: -1,
+						last_theta: this.states.last_theta
+					}
+				}
+
+				this.piston.position.copy(startPos)
+				this.conrod.position.copy(startPos)
+				this.conrod.position.copy(startPos)
+				this.crankshaft_main_f.position.copy(startPos)
+				this.crankshaft_main_c.position.copy(startPos)
+				this.crankshaft_lever_c.position.copy(startPos)
+				this.crankshaft_lever_f.position.copy(startPos)
+				this.cylinder.position.copy(startPos)
+				this.cylinder.position.y += 10
+				
+				this.crankshaft_pedal.position.copy(startPos)
+
+				// Up/Down displacement
+				var x = this.timings.crank_radius * Math.cos(theta)
+				this.piston.position.y = x
+
+				// Find required rotation
+				var this_beta = this.beta * Math.sin(theta)
+				this.conrod.rotation.y = -this_beta
+
+				// Up/Down for conrod
+				this.conrod.position.y += conrod_offset
+				this.conrod.position.y += x
+
+				// Main bearings
+				this.crankshaft_main_f.position.y -= conrod_offset
+				this.crankshaft_main_f.position.z -= 5
+				this.crankshaft_main_c.position.y -= conrod_offset
+				this.crankshaft_main_c.position.z += 5
+				this.crankshaft_main_c.rotation.y = theta
+				this.crankshaft_main_f.rotation.y = theta
+
+				// Conrod bearings
+				this.crankshaft_pedal.position.y -= this.bottom_end
+				this.crankshaft_pedal.position.x = this.timings.crank_radius * Math.sin(theta) 
+				this.crankshaft_pedal.position.y += x
+
+				// Counterweights
+				this.crankshaft_lever_c.position.y -= this.bottom_end-0.75
+				this.crankshaft_lever_c.position.z -= 4
+				this.crankshaft_lever_c.rotation.y = theta - Math.PI/2
+				
+				this.crankshaft_lever_f.position.y -= this.bottom_end-0.75
+				this.crankshaft_lever_f.position.z += 4
+				this.crankshaft_lever_f.rotation.y = theta - Math.PI/2
+
+				// Check if passed ignition trigger angle
+				if(this.states.banged == -1 && theta > this.timings.ignition) {
+					// Set time spark should extinguish
+					this.states.banged = theta + this.timings.dwell
+
+					// Add spark to scene
+					this.spark.position.copy(startPos)
+					this.spark.position.y = 13
+					this.parent.add(this.spark)
+				}
+
+				// Past extinguish point
+				if(this.states.banged < theta) {
+					this.parent.remove(this.spark)
+				}
+
+				this.states.last_theta = theta
+			}
+			get width() {
+				return 11;
+			}
+			addToScene(scene) {
+				scene.add(this.piston)
+				scene.add(this.conrod)
+				scene.add(this.crankshaft_pedal)
+
+				scene.add(this.crankshaft_main_f)
+				scene.add(this.crankshaft_main_c)
+
+				scene.add(this.crankshaft_lever_c)
+				scene.add(this.crankshaft_lever_f)
+
+				scene.add(this.cylinder)
+				
+
+				this.parent = scene
+			}
+			removeFromScene() {
+				scene = this.parent
+				scene.remove(this.piston)
+				scene.remove(this.conrod)
+				scene.remove(this.crankshaft_pedal)
+
+				scene.remove(this.crankshaft_main_f)
+				scene.remove(this.crankshaft_main_c)
+
+				scene.remove(this.crankshaft_lever_c)
+				scene.remove(this.crankshaft_lever_f)
+
+				scene.remove(this.cylinder)
+
+				this.spark.removeFromParent()
+				
+
+				this.parent = null
+			}
+		}
+		
+		// Scene initialisation. This function is only run once, at the very beginning.
+		function init() {
+			scene = new THREE.Scene();
+
+			var cylinders = [
+				new Cylinder(new CylinderTimings(0)),
+				new Cylinder(new CylinderTimings(Math.PI)),
+				new Cylinder(new CylinderTimings(Math.PI* 3)),
+				new Cylinder(new CylinderTimings(Math.PI * 2))
+			]
+
+			engine = new Engine(cylinders, scene)
+
+			// Atmospheric lights
+			var lights = [
+				[-50, -50, -50],
+				[50, -50, -50],
+				[-50, 50, -50],
+				[50, 50, -50],
+				[-50, -50, 50],
+				[50, -50, 50],
+				[-50, 50, 50],
+				[50, 50, 50]
+			]
+
+			for(var i in lights) {
+				var light = new THREE.PointLight(0xffffff, 2, 100)
+				light.position.set(lights[i][0], lights[i][1], lights[i][2])
+				scene.add(light)
+			}
+
+			// Camera Controller allows for the camera to be translated and orbited
+			cameraController = {
+				// The camera to control
+				camera: new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000),
+				// The center of the cameras observation sphere
+				// The camera sits on a point on the sphere
+				center: new THREE.Vector3(0, 0, 0),    
+				rotation: {    // polar position based on center
+					r: 10,
+					lat: 0,
+					long: 0   // theta
+				},
+				// Defines velocity of the camera (x, y, z)
+				velocity: new THREE.Vector3(0, 0, 0),
+				// Magnitude of velocity when being moved
+				velocity_magnitude: 0.1,
+				// Change what the camera is looking at
+				// This will just move the entire sphere rather than rotating the camera in place
+				lookAt: function (position) {
+					// Move the centre of the sphere
+					this.center = position
+				},
+				// Set the position of the camera
+				// position - the position to move to
+				// centerFixed - whether to just move the sphere or to keep it in the center in the same place
+				setPosition: function(position, centerFixed) {
+					if(!centerFixed) {
+						// Just move the center of the sphere, and everything else will follow
+						var newPos = new THREE.Vector3
+						newPos.copy(cameraController.camera.position)
+						
+						newPos.sub(position)
+
+						cameraController.center.sub(newPos)
+					} else {
+						// Calculate new position of the camera in the sphere's coordinate space
+						var relpos = new THREE.Vector3
+						relpos.copy(position)
+						relpos.sub(this.center)
+
+						var latitude = 0
+						var longitude = 0
+						var radius = 0
+						var half_pi = Math.PI/2
+
+						// Radius
+						radius = relpos.length()
+
+						// Longitude (Equitorial)
+						if(relpos.z > 0 && relpos.x >= 0) { // Quadrant 1
+							longitude = Math.atan(relpos.x / relpos.z)
+						}
+						if(relpos.z <= 0 && relpos.x > 0) { // Quadrant 2
+							longitude = Math.atan((0-relpos.z) / relpos.x) + half_pi
+						}
+						if(relpos.z > 0 && relpos.x <= 0) { // Quadrant 3
+							longitude = Math.atan(relpos.x / relpos.z)
+						}
+						if(relpos.z <= 0 && relpos.x < 0) { // Quadrant 4
+							longitude = 0 - Math.atan(relpos.x / relpos.z) - half_pi
+						}
+
+						// Latitude (Prime Meridian axis)
+						var longitude_radius = Math.sqrt(((relpos.x)*(relpos.x)) + (relpos.z)*(relpos.z))
+
+						if(longitude_radius != 0) {
+							latitude = Math.atan(relpos.y / longitude_radius)
+						}
+
+						// Set camera's new location
+						cameraController.rotation.long = longitude
+						cameraController.rotation.lat = latitude
+						cameraController.rotation.r = radius
+
+					}
+				},
+				animate: function () {
+
+					// Do Camera Translation
+					// Convert camera coordinates to world coordinates
+					var world_velocity = new THREE.Vector3();
+					world_velocity.copy(cameraController.velocity);
+					// Ensures constant velocity even if moving in two axes at once
+					world_velocity.normalize();
+					world_velocity.multiplyScalar(this.velocity_magnitude)
+
+					// Convert from camera coordinate space to world space
+					world_velocity.applyQuaternion(cameraController.camera.quaternion);
+					cameraController.center.add(world_velocity)
+
+					// Calculate new position for camera
+					var sin_theta = Math.sin(cameraController.rotation.long)
+					var cos_theta = Math.cos(cameraController.rotation.long)
+				
+					var sin_phi = Math.sin(cameraController.rotation.lat)
+					var cos_phi = Math.cos(cameraController.rotation.lat)
+
+					var r = cameraController.rotation.r
+					
+					var x = r * cos_phi * sin_theta
+					var y = r * sin_phi
+					var z = r * cos_phi * cos_theta
+
+					var newPos = new THREE.Vector3(
+						x, y, z
+					);
+
+					// Convert to real world
+					newPos.add(cameraController.center)
+
+					// Set position
+					cameraController.camera.position.set(newPos.x, newPos.y, newPos.z)
+
+					// Point camera at the centre of the sphere
+					cameraController.camera.lookAt(cameraController.center)
+
+				},
+				// Increment the latitude and longitude by an amount
+				incLatLong(d_lat, d_long) {
+
+					var lat = cameraController.rotation.lat
+					var long = cameraController.rotation.long
+
+					lat += d_lat
+					long += d_long
+
+					// Keep longitude within allowed bounds, with loopround if it does
+					long += Math.PI 
+					long %= 2*Math.PI
+					long -=Math.PI
+
+					// Keep latitude within allowed bounds, but with no looparound
+					// (Prevents camera from going upside down)
+					if(lat < -half_pi || half_pi < lat) {
+						lat -= d_lat
+					}
+				
+					cameraController.rotation.long = long
+					cameraController.rotation.lat = lat
+				},
+				// zoom - changes the z axis of the camera
+				// x - the amount to move by
+				// fixed_center - whether to fix the center of the sphere or not
+				zoom: function (x, fixed_center) {
+					if(fixed_center) {
+						cameraController.rotation.r -= x
+
+						// Restrict to origin
+						if(cameraController.rotation.r < 0) {
+							cameraController.rotation.r = 0
+						}
+					} else {
+						// Effectively just a normal translation of the center point
+						var world_velocity = new THREE.Vector3(0, 0, -x);
+
+						world_velocity.applyQuaternion(cameraController.camera.quaternion);
+						cameraController.center.add(world_velocity)
+					}
+					
+				},
+				// Resizes threejs canvas with window when it is resized
+				onWindowResize: function () {
+					cameraController.camera.aspect = window.innerWidth / window.innerHeight;
+					cameraController.camera.updateProjectionMatrix();
+					renderer.setSize(window.innerWidth, window.innerHeight);
+				},
+				handleKeyDown: function (key) {
+					switch(key) {
+						case "Control": // Speeds up translation when control is held down
+							cameraController.velocity_magnitude = 0.4
+							break;
+						case "ArrowUp": // Translate camera up
+							cameraController.velocity.z = -1
+							break;
+						case "ArrowDown": // Translate camera down
+							cameraController.velocity.z = 1 
+							break; 
+						case "ArrowLeft": // Translate camera left
+							cameraController.velocity.x = -1
+							break;
+						case "ArrowRight": // Translate camera right
+							cameraController.velocity.x = 1
+							break;
+						case "PageUp": // Translate camera up
+							cameraController.velocity.y = 1
+							break;
+						case "PageDown": // Translate camera down
+							cameraController.velocity.y = -1
+							break;
+					}
+				},
+				// Undoes whatever the corresponding keyDown did
+				handleKeyUp: function (key) {
+					switch(key) {
+						case "Control":
+							cameraController.velocity_magnitude = 0.1
+							break;
+							case "ArrowUp":
+							cameraController.velocity.z = 0
+							break;
+						case "ArrowDown":
+							cameraController.velocity.z = 0
+							break;
+						case "ArrowLeft":
+							cameraController.velocity.x = 0
+							break;
+						case "ArrowRight":
+							cameraController.velocity.x = 0
+							break;
+						case "PageUp":
+							cameraController.velocity.y = 0
+							break;
+						case "PageDown":
+							cameraController.velocity.y = 0
+							break;
+					}
+				}
+			}
+
+			
+
+			// Set up the camera, move it to (3, 4, 5) and look at the origin (0, 0, 0).
+			camera_velocity_s = 0.05;
+			cameraController.setPosition(new THREE.Vector3(0,  0, engine.width/2), false)
+			cameraController.rotation.r = 75
+			cameraController.rotation.long = Math.PI/4
+			cameraController.rotation.lat = Math.PI/6
+
+		
+
+			// Draw a helper grid in the x-z plane (note: y is up).
+			//scene.add(new THREE.GridHelper(20, 20, 0xffffff));
+
+
+			// Set up the Web GL renderer.
+			renderer = new THREE.WebGLRenderer({ antialias: true });
+			renderer.setPixelRatio(window.devicePixelRatio); // HiDPI/retina rendering
+			renderer.setSize(window.innerWidth, window.innerHeight);
+			document.body.appendChild(renderer.domElement);
+
+			// Handle resizing of the browser window.
+			window.addEventListener('resize', cameraController.onWindowResize, false);
+		}
+
+		// Animation loop function. This function is called whenever an update is required.
+		function animate() {
+			requestAnimationFrame(animate);
+
+			cameraController.animate()
+
+			// Only animate engine if it exists
+			if(engine != null) {
+				engine.animate()
+
+			}
+			
+			// Render the current scene to the screen.
+			renderer.render(scene, cameraController.camera);
+		}
+
+		
+
+
+
+		function handleKeyUp(event) {
+			cameraController.handleKeyUp(event.key)
+		}
+
+		// Handle keyboard presses.
+		function handleKeyDown(event) {
+			cameraController.handleKeyDown(event.key)
+		}
+
+		// Listen for keyboard events, to react to them.
+		// Note: there are also other event listeners, e.g. for mouse events.
+		document.addEventListener('keydown', handleKeyDown);
+		document.addEventListener('keyup', handleKeyUp);
+
+		var isMouseDown = 0
+		var startPos = {
+			x: 0, y: 0
+		}
+
+		document.addEventListener('mousedown', function (event) {
+			if(event.buttons == 4) {
+				isMouseDown++
+					startPos = {
+					x: event.clientX,
+					y: event.clientY
+				}
+
+				document.body.style.cursor = 'grabbing'
+			}
+			
+		})
+
+		document.addEventListener('mouseup', function (event) {
+			
+				if(isMouseDown!=0) {
+				document.body.style.cursor = 'grab'
+				isMouseDown = 0
+				}
+			
+			
+		})
+
+		var half_pi = Math.PI / 2
+
+		// theta -> lat
+		// phi -> long
+
+		document.addEventListener("mousemove", () => {
+			if(isMouseDown) {
+				var mousex = event.clientX; // Gets Mouse X
+				var mousey = event.clientY;
+
+				var d_x = ((mousex - startPos.x) / window.innerWidth) * Math.PI
+				var d_y = ((mousey - startPos.y) / window.innerHeight) * Math.PI
+
+				
+				cameraController.incLatLong(d_y, -d_x)
+				
+				startPos = {
+					x: event.clientX,
+					y: event.clientY
+				}
+			}
+			 
+	
+		});
+
+		var scrollTop = 0;
+
+
+
+		document.addEventListener("wheel", function (event) {
+			var d = event.deltaY * -0.005;
+			cameraController.zoom(d, true)
+			
+
+
+		})
+	
+	</script>
+</body>
+
+</html>
