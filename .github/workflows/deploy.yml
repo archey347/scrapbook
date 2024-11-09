@@ -15,7 +15,7 @@ jobs:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
           # Define the target URL
-          URL="https://scrapbook.archbar.me/_deploy/"
+          URL="https://scrapbook.archbar.me/.deploy/"
           
           # Make the HTTP GET request with the secret key parameter
           curl -X GET "$URL?key=$DEPLOY_KEY"
