@@ -18,4 +18,4 @@ jobs:
           URL="https://scrapbook.archbar.me/_deploy/"
           
           # Make the HTTP GET request with the secret key parameter
-          curl -X GET "$URL?key=$DEPLOY_KEY"
+          curl -v -X GET "$URL?key=$DEPLOY_KEY"
