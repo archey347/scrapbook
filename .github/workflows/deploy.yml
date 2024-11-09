@@ -1,0 +1,21 @@
+name: Deploy
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Make a web call with a secret key
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        run: |
+          # Define the target URL
+          URL="https://scrapbook.archbar.me/_deploy/"
+          
+          # Make the HTTP GET request with the secret key parameter
+          curl -X GET "$URL?key=$DEPLOY_KEY"
