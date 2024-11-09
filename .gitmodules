@@ -1,0 +1,3 @@
+[submodule "diary-generator"]
+	path = diary-generator
+	url = https://github.com/archey347/diary-generator.git
