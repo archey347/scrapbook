@@ -1,1 +1,3 @@
-grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=arch --modules="normal test efi_gop efi_uga search echo linux all_video gfxmenu gfxterm_background gfxterm_menu gfxterm loadenv configfile gzio part_gpt btrfs"
+printf 'sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md\ngrub,1,Free Software Foundation,grub,2.12,https://www.gnu.org/software/grub/\n' > /tmp/sbat.csv
+
+objcopy --add-section .sbat=/tmp/sbat.csv --set-section-flags .sbat=contents,alloc,load,readonly,data /efi/EFI/arch/grubx64.efi
