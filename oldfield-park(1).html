@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Oldfield Park, Bath — Orienteering Map</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""/>
+<style>
+  /* ---------------- Page setup ---------------- */
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #ddd;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #111;
+  }
+
+  /* On screen: centre the page mock-up so it looks like a sheet of paper */
+  body {
+    display: flex;
+    justify-content: center;
+    padding: 12px;
+  }
+
+  .sheet {
+    /* A4 minus 10mm margins on each side = 190 x 277 mm */
+    width: 190mm;
+    height: 277mm;
+    background: #fff;
+    box-sizing: border-box;
+    position: relative;
+    box-shadow: 0 2px 14px rgba(0,0,0,0.18);
+    display: flex;
+    flex-direction: column;
+  }
+
+  @media print {
+    html, body { background: #fff; padding: 0; }
+    .sheet {
+      box-shadow: none;
+      width: 190mm;
+      height: 277mm;
+    }
+    .no-print { display: none !important; }
+  }
+
+  /* ---------------- Header ---------------- */
+  .header {
+    text-align: center;
+    padding: 2mm 0 1mm;
+    border-bottom: 0.4mm solid #222;
+  }
+  .header h1 {
+    font-size: 14pt;
+    margin: 0;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .header .sub {
+    font-size: 8pt;
+    color: #444;
+    margin-top: 0.5mm;
+  }
+
+  /* ---------------- Map block ---------------- */
+  /* The block holds the map plus its axis-labels around the edge.       */
+  /* Axis label gutter is 7mm.                                           */
+  .map-block {
+    --gutter: 7mm;
+    position: relative;
+    width: 190mm;
+    /* leave header and footer space — header ~10mm, footer ~10mm        */
+    /* total height = sheet height (277) - header (~10) - footer (~10)   */
+    /* but we make the inner map square = 190 - 2*gutter = 176mm         */
+    /* so block height = 176 + 2*gutter = 190mm                          */
+    height: 190mm;
+    margin: 4mm 0 0 0;
+  }
+
+  .map-frame {
+    position: absolute;
+    top: var(--gutter);
+    left: var(--gutter);
+    width: calc(100% - 2 * var(--gutter));
+    height: calc(100% - 2 * var(--gutter));
+    border: 0.4mm solid #111;
+    overflow: hidden;
+    background: #f7f4ec;
+  }
+
+  #map {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* SVG grid sits on top of the Leaflet map. Leaflet's internal panes
+     use z-indexes up to ~700 (popups), tiles are 200, so we go above.  */
+  .grid-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    width: 100%;
+    height: 100%;
+    z-index: 800;
+  }
+
+  /* Axis gutters — labels are absolutely positioned at exact %ages
+     so they sit precisely on the SVG gridlines.                      */
+  .axis {
+    position: absolute;
+    color: #111;
+    font-size: 8.5pt;
+    font-weight: 600;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .axis-x-top, .axis-x-bot {
+    left: var(--gutter);
+    width: calc(100% - 2 * var(--gutter));
+    height: var(--gutter);
+  }
+  .axis-x-top { top: 0; }
+  .axis-x-bot { bottom: 0; }
+
+  .axis-y-left, .axis-y-right {
+    top: var(--gutter);
+    height: calc(100% - 2 * var(--gutter));
+    width: var(--gutter);
+  }
+  .axis-y-left  { left:  0; }
+  .axis-y-right { right: 0; }
+
+  .axis .lbl {
+    position: absolute;
+    line-height: 1;
+  }
+  /* X axis: labels sit BELOW the top gutter / ABOVE the bottom gutter,
+     centred horizontally on each gridline. */
+  .axis-x-top .lbl {
+    bottom: 1mm;
+    transform: translateX(-50%);
+  }
+  .axis-x-bot .lbl {
+    top: 1mm;
+    transform: translateX(-50%);
+  }
+  /* Y axis: labels sit to the RIGHT of the left gutter / LEFT of the right
+     gutter, centred vertically on each gridline. The gridline at "1" is
+     90% from the top (OS convention: y increases upward).              */
+  .axis-y-left .lbl {
+    right: 1mm;
+    transform: translateY(-50%);  /* centre vertically on the gridline */
+  }
+  .axis-y-right .lbl {
+    left: 1mm;
+    transform: translateY(-50%);
+  }
+
+  /* ---------------- Footer ---------------- */
+  .footer {
+    margin-top: auto;
+    padding: 2mm 4mm;
+    font-size: 7.5pt;
+    color: #333;
+    display: flex;
+    justify-content: space-between;
+    border-top: 0.4mm solid #222;
+  }
+  .footer .scale-bar {
+    display: flex;
+    align-items: center;
+    gap: 2mm;
+  }
+  .scale-bar svg { display: block; }
+
+  /* ---------------- Tiny on-screen helper ---------------- */
+  .help {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    background: #fff;
+    border: 1px solid #aaa;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.35;
+    max-width: 240px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  }
+  .help b { display: block; margin-bottom: 3px; }
+  .help button {
+    margin-top: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+
+  /* Hide Leaflet attribution box on print since we put it in the footer */
+  @media print {
+    .leaflet-control-container { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="help no-print">
+  <b>Oldfield Park map</b>
+  Wait for the map tiles to finish loading, then press <b>Print</b> (or <kbd>Ctrl</kbd>+<kbd>P</kbd>) and choose <b>A4 portrait</b>. Make sure “background graphics” is enabled in the print dialog.
+  <br><button onclick="window.print()">Print</button>
+</div>
+
+<div class="sheet">
+
+  <div class="header">
+    <h1>Oldfield Park, Bath</h1>
+    <div class="sub">Orienteering map · ~0.4 mi span · centred 51.37371° N, 2.38245° W</div>
+  </div>
+
+  <div class="map-block">
+    <!-- The actual map -->
+    <div class="map-frame">
+      <div id="map"></div>
+      <svg class="grid-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Major gridlines at 1..9 (every 100 svg units = 10% of map) -->
+        <g stroke="#000" stroke-opacity="0.55" stroke-width="1" fill="none" vector-effect="non-scaling-stroke">
+          <line x1="100"  y1="0" x2="100"  y2="1000"/>
+          <line x1="200"  y1="0" x2="200"  y2="1000"/>
+          <line x1="300"  y1="0" x2="300"  y2="1000"/>
+          <line x1="400"  y1="0" x2="400"  y2="1000"/>
+          <line x1="500"  y1="0" x2="500"  y2="1000"/>
+          <line x1="600"  y1="0" x2="600"  y2="1000"/>
+          <line x1="700"  y1="0" x2="700"  y2="1000"/>
+          <line x1="800"  y1="0" x2="800"  y2="1000"/>
+          <line x1="900"  y1="0" x2="900"  y2="1000"/>
+
+          <line y1="100"  x1="0" y2="100"  x2="1000"/>
+          <line y1="200"  x1="0" y2="200"  x2="1000"/>
+          <line y1="300"  x1="0" y2="300"  x2="1000"/>
+          <line y1="400"  x1="0" y2="400"  x2="1000"/>
+          <line y1="500"  x1="0" y2="500"  x2="1000"/>
+          <line y1="600"  x1="0" y2="600"  x2="1000"/>
+          <line y1="700"  x1="0" y2="700"  x2="1000"/>
+          <line y1="800"  x1="0" y2="800"  x2="1000"/>
+          <line y1="900"  x1="0" y2="900"  x2="1000"/>
+        </g>
+
+        <!-- Tick marks pointing inward at the 9 boundaries on each side
+             (drawn as short black notches inside the frame edge) -->
+        <g stroke="#000" stroke-width="1.4" fill="none" vector-effect="non-scaling-stroke">
+          <!-- top & bottom ticks -->
+          <line x1="100" y1="0"   x2="100" y2="10"/>
+          <line x1="200" y1="0"   x2="200" y2="10"/>
+          <line x1="300" y1="0"   x2="300" y2="10"/>
+          <line x1="400" y1="0"   x2="400" y2="10"/>
+          <line x1="500" y1="0"   x2="500" y2="10"/>
+          <line x1="600" y1="0"   x2="600" y2="10"/>
+          <line x1="700" y1="0"   x2="700" y2="10"/>
+          <line x1="800" y1="0"   x2="800" y2="10"/>
+          <line x1="900" y1="0"   x2="900" y2="10"/>
+          <line x1="100" y1="990" x2="100" y2="1000"/>
+          <line x1="200" y1="990" x2="200" y2="1000"/>
+          <line x1="300" y1="990" x2="300" y2="1000"/>
+          <line x1="400" y1="990" x2="400" y2="1000"/>
+          <line x1="500" y1="990" x2="500" y2="1000"/>
+          <line x1="600" y1="990" x2="600" y2="1000"/>
+          <line x1="700" y1="990" x2="700" y2="1000"/>
+          <line x1="800" y1="990" x2="800" y2="1000"/>
+          <line x1="900" y1="990" x2="900" y2="1000"/>
+          <!-- left & right ticks -->
+          <line x1="0"   y1="100" x2="10"   y2="100"/>
+          <line x1="0"   y1="200" x2="10"   y2="200"/>
+          <line x1="0"   y1="300" x2="10"   y2="300"/>
+          <line x1="0"   y1="400" x2="10"   y2="400"/>
+          <line x1="0"   y1="500" x2="10"   y2="500"/>
+          <line x1="0"   y1="600" x2="10"   y2="600"/>
+          <line x1="0"   y1="700" x2="10"   y2="700"/>
+          <line x1="0"   y1="800" x2="10"   y2="800"/>
+          <line x1="0"   y1="900" x2="10"   y2="900"/>
+          <line x1="990" y1="100" x2="1000" y2="100"/>
+          <line x1="990" y1="200" x2="1000" y2="200"/>
+          <line x1="990" y1="300" x2="1000" y2="300"/>
+          <line x1="990" y1="400" x2="1000" y2="400"/>
+          <line x1="990" y1="500" x2="1000" y2="500"/>
+          <line x1="990" y1="600" x2="1000" y2="600"/>
+          <line x1="990" y1="700" x2="1000" y2="700"/>
+          <line x1="990" y1="800" x2="1000" y2="800"/>
+          <line x1="990" y1="900" x2="1000" y2="900"/>
+        </g>
+
+        <!-- Centre cross at (500, 500) marking the user-supplied centre -->
+        <g stroke="#c00" stroke-width="1.6" fill="none" vector-effect="non-scaling-stroke">
+          <line x1="490" y1="500" x2="510" y2="500"/>
+          <line x1="500" y1="490" x2="500" y2="510"/>
+          <circle cx="500" cy="500" r="3" fill="#c00" stroke="none"/>
+        </g>
+      </svg>
+    </div>
+
+    <!-- Axis labels: absolutely positioned at exact gridline percentages.
+         X labels sit at 10%, 20% .. 90% from the LEFT.
+         Y labels sit at 10%, 20% .. 90% from the BOTTOM (OS convention),
+         which is 90%, 80% .. 10% from the TOP.                         -->
+
+    <div class="axis axis-x-top">
+      <div class="lbl" style="left:10%">1</div>
+      <div class="lbl" style="left:20%">2</div>
+      <div class="lbl" style="left:30%">3</div>
+      <div class="lbl" style="left:40%">4</div>
+      <div class="lbl" style="left:50%">5</div>
+      <div class="lbl" style="left:60%">6</div>
+      <div class="lbl" style="left:70%">7</div>
+      <div class="lbl" style="left:80%">8</div>
+      <div class="lbl" style="left:90%">9</div>
+    </div>
+
+    <div class="axis axis-x-bot">
+      <div class="lbl" style="left:10%">1</div>
+      <div class="lbl" style="left:20%">2</div>
+      <div class="lbl" style="left:30%">3</div>
+      <div class="lbl" style="left:40%">4</div>
+      <div class="lbl" style="left:50%">5</div>
+      <div class="lbl" style="left:60%">6</div>
+      <div class="lbl" style="left:70%">7</div>
+      <div class="lbl" style="left:80%">8</div>
+      <div class="lbl" style="left:90%">9</div>
+    </div>
+
+    <div class="axis axis-y-left">
+      <div class="lbl" style="top:90%">1</div>
+      <div class="lbl" style="top:80%">2</div>
+      <div class="lbl" style="top:70%">3</div>
+      <div class="lbl" style="top:60%">4</div>
+      <div class="lbl" style="top:50%">5</div>
+      <div class="lbl" style="top:40%">6</div>
+      <div class="lbl" style="top:30%">7</div>
+      <div class="lbl" style="top:20%">8</div>
+      <div class="lbl" style="top:10%">9</div>
+    </div>
+
+    <div class="axis axis-y-right">
+      <div class="lbl" style="top:90%">1</div>
+      <div class="lbl" style="top:80%">2</div>
+      <div class="lbl" style="top:70%">3</div>
+      <div class="lbl" style="top:60%">4</div>
+      <div class="lbl" style="top:50%">5</div>
+      <div class="lbl" style="top:40%">6</div>
+      <div class="lbl" style="top:30%">7</div>
+      <div class="lbl" style="top:20%">8</div>
+      <div class="lbl" style="top:10%">9</div>
+    </div>
+
+  </div><!-- /map-block -->
+
+  <div class="footer">
+    <div>Map data © OpenStreetMap contributors, ODbL.</div>
+    <div class="scale-bar">
+      <span>0</span>
+      <!-- Scale bar drawn at TRUE print scale.
+           Map width = 176mm represents 643.74m, so 100m = 27.34mm.
+           We draw 4 alternating 25m segments = 100m total.            -->
+      <svg width="27.34mm" height="2.2mm" viewBox="0 0 100 6"
+           preserveAspectRatio="none">
+        <rect x="0"   y="0" width="25" height="6" fill="#000"/>
+        <rect x="25"  y="0" width="25" height="6" fill="#fff" stroke="#000" stroke-width="0.6"/>
+        <rect x="50"  y="0" width="25" height="6" fill="#000"/>
+        <rect x="75"  y="0" width="25" height="6" fill="#fff" stroke="#000" stroke-width="0.6"/>
+      </svg>
+      <span>100 m</span>
+      <span style="margin-left: 4mm; color:#555;">grid sq ≈ 64 m · scale ≈ 1:3,660</span>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+  // -----------------------------------------------------------------
+  // Configuration: centre + extent
+  // -----------------------------------------------------------------
+  const CENTER = [51.37371050339825, -2.382452355676512];
+  const RANGE_MILES = 0.4;
+  const RANGE_M = RANGE_MILES * 1609.344;
+  const HALF_M  = RANGE_M / 2;
+
+  // Convert metres to degrees at this latitude
+  const M_PER_DEG_LAT = 111320;
+  const M_PER_DEG_LON = 111320 * Math.cos(CENTER[0] * Math.PI / 180);
+  const DLAT = HALF_M / M_PER_DEG_LAT;
+  const DLON = HALF_M / M_PER_DEG_LON;
+
+  const SOUTH = CENTER[0] - DLAT;
+  const NORTH = CENTER[0] + DLAT;
+  const WEST  = CENTER[1] - DLON;
+  const EAST  = CENTER[1] + DLON;
+
+  const bounds = L.latLngBounds([SOUTH, WEST], [NORTH, EAST]);
+
+  // -----------------------------------------------------------------
+  // Map
+  // -----------------------------------------------------------------
+  // We want the map container to show exactly a RANGE_M × RANGE_M metric
+  // square centred on CENTER. Since the container is square and Web
+  // Mercator distorts longitude/latitude differently, we drive Leaflet
+  // by setView(center, zoom) using a zoom computed from metric extent.
+
+  const map = L.map('map', {
+    zoomControl: false,
+    attributionControl: false,
+    scrollWheelZoom: true,
+    dragging: true,
+    doubleClickZoom: true,
+    boxZoom: false,
+    keyboard: false,
+    touchZoom: true,
+    inertia: true,
+    fadeAnimation: false,
+    zoomAnimation: true,
+    zoomSnap: 0,         // allow fractional zoom for an exact fit
+    zoomDelta: 0.5
+  });
+
+  function fitMetricSquare() {
+    const container = map.getContainer();
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    const sidePx = Math.min(w, h);          // square anyway, but be safe
+    const metresPerPixel = RANGE_M / sidePx;
+    // Leaflet/OSM Web Mercator pixel size at latitude φ:
+    //   m_per_px = 156543.03392 * cos(φ) / 2^z
+    const phi = CENTER[0] * Math.PI / 180;
+    const z = Math.log2(156543.03392 * Math.cos(phi) / metresPerPixel);
+    // Clamp to OSM's max
+    const zClamped = Math.min(z, 19);
+    map.setView(CENTER, zClamped, { animate: false });
+  }
+
+  // OpenStreetMap "Standard" tiles
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    crossOrigin: true,
+    attribution: '© OpenStreetMap contributors'
+  }).addTo(map);
+
+  // Initial fit to the requested 0.4-mile square.
+  fitMetricSquare();
+  // Belt-and-braces: refit shortly after first paint so tiles are sized right.
+  setTimeout(() => { map.invalidateSize(); fitMetricSquare(); }, 200);
+  setTimeout(() => { map.invalidateSize(); fitMetricSquare(); }, 800);
+
+  // For print, snap back to the original square so the printed map always
+  // shows the requested area regardless of any panning/zooming the user did.
+  let savedView = null;
+  window.addEventListener('beforeprint', () => {
+    savedView = { center: map.getCenter(), zoom: map.getZoom() };
+    map.invalidateSize();
+    fitMetricSquare();
+  });
+  window.addEventListener('afterprint', () => {
+    if (savedView) {
+      map.setView(savedView.center, savedView.zoom, { animate: false });
+      savedView = null;
+    }
+  });
+
+  // On window resize just keep Leaflet's internal size in sync — don't
+  // override the user's current view.
+  window.addEventListener('resize', () => map.invalidateSize());
+</script>
+
+</body>
+</html>
