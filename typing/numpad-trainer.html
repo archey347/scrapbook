@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>numpadr — numberpad typing trainer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Fraunces:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d100e;
+    --bg-2: #14181658;
+    --ink: #e8e6df;
+    --dim: #6b7470;
+    --line: #232825;
+    --accent: #b8ff5c;
+    --accent-dim: #5a7a2d;
+    --warn: #ff6b5b;
+    --warn-dim: #5a2b26;
+    --pending: #3a423d;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  body {
+    background-image:
+      radial-gradient(ellipse 800px 400px at 50% -10%, rgba(184, 255, 92, 0.06), transparent 60%),
+      radial-gradient(ellipse 600px 300px at 80% 110%, rgba(184, 255, 92, 0.04), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  /* subtle scanline texture */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image: repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,0.012) 0px,
+      rgba(255,255,255,0.012) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    z-index: 100;
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 32px 24px 80px;
+  }
+
+  /* HEADER */
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 40px;
+  }
+
+  .brand {
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-weight: 600;
+    font-size: 28px;
+    letter-spacing: -0.02em;
+  }
+  .brand .dot { color: var(--accent); }
+
+  .tagline {
+    font-size: 11px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+  }
+
+  /* SETTINGS */
+  .settings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 28px;
+  }
+
+  .chip {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--dim);
+    padding: 6px 12px;
+    font-family: inherit;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border-radius: 2px;
+  }
+  .chip:hover { color: var(--ink); border-color: var(--dim); }
+  .chip.active {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+    font-weight: 500;
+  }
+
+  .chip-group {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .chip-group .chip {
+    border: none;
+    border-right: 1px solid var(--line);
+    border-radius: 0;
+  }
+  .chip-group .chip:last-child { border-right: none; }
+
+  .label {
+    font-size: 10px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    align-self: center;
+    margin-right: 4px;
+  }
+
+  /* TYPING AREA */
+  .typing-card {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 48px 40px;
+    position: relative;
+    min-height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .typing-card::before {
+    content: "BATCH";
+    position: absolute;
+    top: 14px;
+    left: 16px;
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    color: var(--dim);
+  }
+  .batch-counter {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    color: var(--dim);
+  }
+
+  .text-display {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: clamp(28px, 4.5vw, 44px);
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    text-align: center;
+    line-height: 1.6;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    user-select: none;
+  }
+
+  .char { position: relative; transition: color 0.08s ease; }
+  .char.pending { color: var(--pending); }
+  .char.correct { color: var(--accent); }
+  .char.incorrect { color: var(--warn); background: var(--warn-dim); border-radius: 2px; }
+  .char.space.pending { color: transparent; }
+  .char.space.pending::after {
+    content: "·";
+    color: var(--pending);
+    position: absolute;
+    left: 0; right: 0;
+    text-align: center;
+  }
+  .char.cursor {
+    background: var(--accent);
+    color: var(--bg) !important;
+    animation: blink 1s infinite;
+    border-radius: 2px;
+  }
+  @keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0.4; }
+  }
+
+  /* STATS BAR */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--line);
+    margin-top: 32px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .stat {
+    background: var(--bg);
+    padding: 18px 20px;
+    text-align: left;
+  }
+
+  .stat-label {
+    font-size: 9px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    margin-bottom: 6px;
+  }
+
+  .stat-value {
+    font-family: 'Fraunces', serif;
+    font-size: 32px;
+    font-weight: 400;
+    line-height: 1;
+    color: var(--ink);
+    letter-spacing: -0.02em;
+  }
+  .stat-value.live { color: var(--accent); }
+  .stat-value .unit {
+    font-size: 11px;
+    color: var(--dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-left: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* HISTORY */
+  .history-section {
+    margin-top: 48px;
+  }
+  .history-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--dim);
+    margin-bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .history-clear {
+    background: none;
+    border: none;
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .history-clear:hover { color: var(--warn); }
+
+  .history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .history-row {
+    display: grid;
+    grid-template-columns: 1fr 80px 80px 80px;
+    gap: 16px;
+    padding: 10px 14px;
+    background: var(--bg-2);
+    border-left: 2px solid var(--line);
+    font-size: 12px;
+    align-items: center;
+  }
+  .history-row:hover { border-left-color: var(--accent); }
+  .history-content {
+    color: var(--dim);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .history-metric {
+    text-align: right;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .history-metric.accent { color: var(--accent); }
+
+  /* KEYBOARD HEATMAP */
+  .heatmap-section { margin-top: 48px; }
+  .keypad {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    max-width: 360px;
+    margin-top: 16px;
+  }
+  .key {
+    aspect-ratio: 1;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    transition: all 0.2s ease;
+  }
+  .key-label {
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+  .key-stat {
+    font-size: 9px;
+    color: var(--dim);
+    margin-top: 2px;
+    letter-spacing: 0.08em;
+  }
+  .key.wide { grid-column: span 2; aspect-ratio: 2 / 1; }
+  .key.zero { grid-column: span 2; aspect-ratio: 2 / 1; }
+
+  /* HIDDEN INPUT */
+  .hidden-input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+    width: 1px;
+    height: 1px;
+  }
+
+  /* RESPONSIVE */
+  @media (max-width: 640px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .container { padding: 20px 16px 60px; }
+    .typing-card { padding: 40px 20px; }
+    .history-row { grid-template-columns: 1fr 60px 60px; }
+    .history-row .history-metric:nth-child(3) { display: none; }
+  }
+
+  .helper {
+    margin-top: 14px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--dim);
+    letter-spacing: 0.1em;
+  }
+  .helper kbd {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 10px;
+    color: var(--ink);
+    margin: 0 2px;
+  }
+
+  /* PROGRESSION */
+  .progress-section {
+    margin: 28px 0 0;
+    padding: 18px 20px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  .progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 14px;
+  }
+  .progress-title {
+    font-size: 10px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+  }
+  .progress-status {
+    font-size: 11px;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.05em;
+  }
+  .progress-keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .pkey {
+    min-width: 38px;
+    height: 38px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px;
+    font-weight: 500;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.25s ease;
+  }
+  .pkey.locked {
+    color: var(--pending);
+    border-style: dashed;
+    opacity: 0.5;
+  }
+  .pkey.unlocked {
+    color: var(--ink);
+    border-color: var(--dim);
+  }
+  .pkey.mastered {
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .pkey.active::after {
+    content: "";
+    position: absolute;
+    bottom: 0; left: 0;
+    height: 2px;
+    background: var(--accent);
+    width: var(--p, 0%);
+    transition: width 0.4s ease;
+  }
+  .pkey .pkey-acc {
+    position: absolute;
+    top: 2px;
+    right: 3px;
+    font-size: 8px;
+    color: var(--dim);
+    letter-spacing: 0;
+  }
+  .pkey.mastered .pkey-acc { color: rgba(13, 16, 14, 0.6); }
+  .progress-hint {
+    margin-top: 12px;
+    font-size: 11px;
+    color: var(--dim);
+    letter-spacing: 0.02em;
+  }
+  .progress-hint strong { color: var(--accent); font-weight: 500; }
+  .progress-section.unlock-flash {
+    animation: unlock-pulse 0.8s ease;
+  }
+  @keyframes unlock-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(184, 255, 92, 0); }
+    50% { box-shadow: 0 0 0 4px rgba(184, 255, 92, 0.25); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="brand">numpadr<span class="dot">.</span></div>
+    <div class="tagline">numberpad · drill mode</div>
+  </header>
+
+  <!-- SETTINGS -->
+  <div class="settings">
+    <span class="label">Mode</span>
+    <div class="chip-group" id="mode-group">
+      <button class="chip active" data-mode="integers">Integers</button>
+      <button class="chip" data-mode="decimals">Decimals</button>
+      <button class="chip" data-mode="math">Math</button>
+      <button class="chip" data-mode="mixed">Mixed</button>
+    </div>
+
+    <span class="label" style="margin-left:8px">Length</span>
+    <div class="chip-group" id="length-group">
+      <button class="chip" data-len="1">1-digit</button>
+      <button class="chip active" data-len="2">2-3</button>
+      <button class="chip" data-len="3">3-5</button>
+    </div>
+
+    <span class="label" style="margin-left:8px">Progression</span>
+    <div class="chip-group" id="prog-group">
+      <button class="chip active" data-prog="on">Adaptive</button>
+      <button class="chip" data-prog="off">All keys</button>
+    </div>
+  </div>
+
+  <!-- PROGRESSION BAR -->
+  <div class="progress-section" id="progress-section">
+    <div class="progress-header">
+      <span class="progress-title">unlocked keys</span>
+      <span class="progress-status" id="progress-status">0 / 10 mastered</span>
+    </div>
+    <div class="progress-keys" id="progress-keys"></div>
+    <div class="progress-hint" id="progress-hint">Hit <strong>95% accuracy</strong> on a key to master it and unlock the next one.</div>
+  </div>
+
+  <!-- TYPING AREA -->
+  <div class="typing-card" id="typing-card" tabindex="0">
+    <div class="batch-counter" id="batch-counter">10 NUMBERS</div>
+    <div class="text-display" id="text-display"></div>
+    <input type="text" class="hidden-input" id="hidden-input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+  </div>
+
+  <div class="helper">
+    Press <kbd>Tab</kbd> or click the panel to focus · <kbd>Esc</kbd> to restart batch
+  </div>
+
+  <!-- STATS -->
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">Speed</div>
+      <div class="stat-value live" id="stat-cpm">0<span class="unit">cpm</span></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Accuracy</div>
+      <div class="stat-value" id="stat-acc">—<span class="unit">%</span></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Errors</div>
+      <div class="stat-value" id="stat-err">0</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Batches</div>
+      <div class="stat-value" id="stat-batches">0</div>
+    </div>
+  </div>
+
+  <!-- HISTORY -->
+  <div class="history-section">
+    <div class="history-title">
+      <span>recent batches</span>
+      <button class="history-clear" id="clear-history">clear</button>
+    </div>
+    <div class="history-list" id="history-list">
+      <div class="history-row" style="color:var(--dim); border-left-color:transparent;">
+        <div class="history-content" style="font-style:italic">— complete a batch to see results —</div>
+        <div></div><div></div><div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- HEATMAP -->
+  <div class="heatmap-section">
+    <div class="history-title"><span>numberpad heatmap</span><span style="color:var(--dim);font-style:italic;font-family:'Fraunces',serif;text-transform:none;letter-spacing:0;">errors by key</span></div>
+    <div class="keypad" id="keypad"></div>
+  </div>
+
+</div>
+
+<script>
+  // ---- STATE ----
+  const state = {
+    mode: 'integers',
+    lenBucket: '2',
+    progression: 'on',
+    batch: '',
+    typed: [],       // per-position: true=correct, false=incorrect, undefined=not yet typed
+    pos: 0,
+    errors: 0,
+    totalErrors: 0,
+    startTime: null,
+    batches: 0,
+    history: [],
+    keyErrors: {},
+    inputBuffer: ''
+  };
+
+  // ---- TRANSITION TIMING (silent, no UI) ----
+  // Records rolling time deltas between consecutive correctly-typed adjacent keystrokes.
+  // Used to bias digit generation toward slower transitions so the user practices them more.
+  const transitionTimes = {};       // { prevKey: { currKey: [dt1, dt2, ...] } }
+  const TRANSITION_WINDOW = 20;     // rolling window per transition
+  const TRANSITION_MIN_DT = 50;     // ms; below this is likely a double-press
+  const TRANSITION_MAX_DT = 2000;   // ms; above this user was probably distracted
+  const WEIGHT_FLOOR = 0.4;         // no digit drops below this fraction of uniform weight
+  const WEIGHT_POWER = 2;           // exponent; slow transitions get ratio^power weight
+  let prevKeystroke = null;         // { position, time, expectedChar, wasCorrect }
+
+  function recordTransition(prev, curr, dt) {
+    if (dt < TRANSITION_MIN_DT || dt > TRANSITION_MAX_DT) return;
+    if (!transitionTimes[prev]) transitionTimes[prev] = {};
+    if (!transitionTimes[prev][curr]) transitionTimes[prev][curr] = [];
+    const arr = transitionTimes[prev][curr];
+    arr.push(dt);
+    if (arr.length > TRANSITION_WINDOW) arr.shift();
+  }
+
+  function avgTransitionTime(prev, curr) {
+    const arr = transitionTimes[prev] && transitionTimes[prev][curr];
+    if (!arr || arr.length === 0) return null;
+    let sum = 0;
+    for (const v of arr) sum += v;
+    return sum / arr.length;
+  }
+
+  // Weighted pick for the next digit given the previous character (digit or '.').
+  // Slow transitions get more weight; floor keeps fast ones in rotation.
+  function weightedPickDigit(prev, candidates) {
+    if (!prev || candidates.length <= 1) return pick(candidates);
+
+    const times = candidates.map(c => avgTransitionTime(prev, c));
+    const seen = times.filter(t => t !== null);
+    // need at least 2 measured transitions from `prev` before weighting kicks in
+    if (seen.length < 2) return pick(candidates);
+
+    const avgSeen = seen.reduce((a, b) => a + b, 0) / seen.length;
+
+    const weights = times.map(t => {
+      if (t === null) return 1; // unseen transition: normal weight (encourages exploration)
+      const ratio = t / avgSeen;
+      return Math.max(WEIGHT_FLOOR, Math.pow(ratio, WEIGHT_POWER));
+    });
+
+    const total = weights.reduce((a, b) => a + b, 0);
+    let r = Math.random() * total;
+    for (let i = 0; i < candidates.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return candidates[i];
+    }
+    return candidates[candidates.length - 1];
+  }
+
+  // ---- PROGRESSION ----
+  // Order keys are unlocked. Start with the home cluster (4-5-6), then expand outward.
+  // Operators/decimals unlock when their relevant mode needs them and after digits are solid.
+  const PROGRESSION_ORDER = ['4', '5', '6', '1', '2', '3', '7', '8', '9', '0', '.', '+', '-', '*', '/'];
+
+  // Rolling per-key stats: counts of recent attempts (correct + incorrect)
+  // We maintain a sliding window so accuracy reflects recent performance.
+  const WINDOW_SIZE = 30;       // last 30 attempts on a key
+  const MASTERY_MIN_ATTEMPTS = 15;
+  const MASTERY_ACCURACY = 0.95;
+
+  const keyStats = {}; // key -> { attempts: [1,0,1,...], mastered: bool }
+
+  function getKeyStat(k) {
+    if (!keyStats[k]) keyStats[k] = { attempts: [], mastered: false };
+    return keyStats[k];
+  }
+
+  function recordAttempt(key, correct) {
+    const s = getKeyStat(key);
+    s.attempts.push(correct ? 1 : 0);
+    if (s.attempts.length > WINDOW_SIZE) s.attempts.shift();
+  }
+
+  function keyAccuracy(key) {
+    const s = getKeyStat(key);
+    if (s.attempts.length === 0) return null;
+    const hits = s.attempts.reduce((a, b) => a + b, 0);
+    return hits / s.attempts.length;
+  }
+
+  function isMastered(key) {
+    const s = getKeyStat(key);
+    if (s.mastered) return true;
+    if (s.attempts.length < MASTERY_MIN_ATTEMPTS) return false;
+    return keyAccuracy(key) >= MASTERY_ACCURACY;
+  }
+
+  // Returns the set of keys currently available based on progression.
+  // Always start with the first 3 keys (home cluster). For each mastered key,
+  // unlock one additional key in order. Mastered keys that get unlocked also count,
+  // so progress can cascade.
+  function unlockedKeys() {
+    if (state.progression === 'off') return new Set(PROGRESSION_ORDER);
+    const STARTER = 3;
+    const unlocked = new Set();
+    for (let i = 0; i < STARTER && i < PROGRESSION_ORDER.length; i++) {
+      unlocked.add(PROGRESSION_ORDER[i]);
+    }
+    // Count mastered among currently-unlocked keys; that many extras get unlocked.
+    // Use a loop so newly-unlocked-and-already-mastered keys cascade.
+    let idx = STARTER;
+    let masteredInUnlocked = [...unlocked].filter(isMastered).length;
+    while (idx < PROGRESSION_ORDER.length && masteredInUnlocked > (idx - STARTER)) {
+      const next = PROGRESSION_ORDER[idx];
+      unlocked.add(next);
+      if (isMastered(next)) masteredInUnlocked++;
+      idx++;
+    }
+    return unlocked;
+  }
+
+  function digitsAvailable() {
+    const u = unlockedKeys();
+    return [...u].filter(k => /[0-9]/.test(k));
+  }
+
+  function decimalAvailable() {
+    return unlockedKeys().has('.');
+  }
+
+  function opsAvailable() {
+    const u = unlockedKeys();
+    return ['+', '-', '*', '/'].filter(o => u.has(o));
+  }
+
+  // ---- GENERATION ----
+  function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+  function pick(arr) { return arr[rand(0, arr.length - 1)]; }
+
+  function genInteger(maxDigits) {
+    const digits = digitsAvailable();
+    if (digits.length === 0) return '5'; // safety
+    const nonZero = digits.filter(d => d !== '0');
+    const len = rand(1, maxDigits);
+    let s = '';
+    // first digit: avoid leading zero unless that's all we have; uniform pick (no prev)
+    s += pick(nonZero.length ? nonZero : digits);
+    for (let i = 1; i < len; i++) {
+      s += weightedPickDigit(s[s.length - 1], digits);
+    }
+    return s;
+  }
+
+  function genDecimal(maxDigits) {
+    const digits = digitsAvailable();
+    const nonZero = digits.filter(d => d !== '0');
+    const intDigits = rand(1, Math.max(1, maxDigits - 1));
+    const decDigits = rand(1, 3);
+    let s = pick(nonZero.length ? nonZero : digits);
+    for (let i = 1; i < intDigits; i++) s += weightedPickDigit(s[s.length - 1], digits);
+    s += '.';
+    for (let i = 0; i < decDigits; i++) s += weightedPickDigit(s[s.length - 1], digits);
+    return s;
+  }
+
+  function genNumber() {
+    const maxDigits = state.lenBucket === '1' ? 1 : state.lenBucket === '2' ? 3 : 5;
+    if (state.mode === 'integers') return genInteger(maxDigits);
+    if (state.mode === 'decimals') {
+      return (decimalAvailable() && Math.random() < 0.7) ? genDecimal(maxDigits) : genInteger(maxDigits);
+    }
+    if (state.mode === 'math' || state.mode === 'mixed') {
+      return (decimalAvailable() && Math.random() < 0.3) ? genDecimal(maxDigits) : genInteger(maxDigits);
+    }
+    return genInteger(maxDigits);
+  }
+
+  function genOperator() {
+    const ops = opsAvailable();
+    if (ops.length === 0) return '+'; // fallback (shouldn't render if locked, see below)
+    return pick(ops);
+  }
+
+  function genBatch() {
+    const parts = [];
+    for (let i = 0; i < 10; i++) parts.push(genNumber());
+
+    if (state.mode === 'integers' || state.mode === 'decimals') {
+      return parts.join(' ');
+    }
+    const haveOps = opsAvailable().length > 0;
+    if (state.mode === 'math') {
+      if (!haveOps) return parts.join(' '); // graceful: just space until an op is unlocked
+      return parts.reduce((acc, p, i) => i === 0 ? p : acc + ' ' + genOperator() + ' ' + p, '');
+    }
+    // mixed: randomize separators
+    return parts.reduce((acc, p, i) => {
+      if (i === 0) return p;
+      const sep = (haveOps && Math.random() < 0.5) ? ' ' + genOperator() + ' ' : ' ';
+      return acc + sep + p;
+    }, '');
+  }
+
+  // ---- RENDER ----
+  const display = document.getElementById('text-display');
+  const card = document.getElementById('typing-card');
+  const hiddenInput = document.getElementById('hidden-input');
+
+  function render() {
+    let html = '';
+    for (let i = 0; i < state.batch.length; i++) {
+      const ch = state.batch[i];
+      const escaped = ch === ' ' ? ' ' : ch.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      let cls = 'char';
+      if (ch === ' ') cls += ' space';
+      if (i === state.pos) {
+        cls += ' cursor';
+      } else if (i < state.pos) {
+        cls += state.typed[i] ? ' correct' : ' incorrect';
+      } else {
+        cls += ' pending';
+      }
+      html += `<span class="${cls}">${escaped}</span>`;
+    }
+    display.innerHTML = html;
+  }
+
+  function newBatch() {
+    state.batch = genBatch();
+    state.typed = new Array(state.batch.length);
+    state.pos = 0;
+    state.errors = 0;
+    state.startTime = null;
+    state.inputBuffer = '';
+    prevKeystroke = null;
+    render();
+    updateLiveStats();
+  }
+
+  // ---- INPUT HANDLING ----
+  function focusInput() {
+    hiddenInput.focus();
+  }
+
+  card.addEventListener('click', focusInput);
+  card.addEventListener('focus', focusInput);
+  window.addEventListener('load', () => setTimeout(focusInput, 100));
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      newBatch();
+      focusInput();
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      focusInput();
+      return;
+    }
+  });
+
+  hiddenInput.addEventListener('keydown', (e) => {
+    // ignore modifier keys etc
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      if (state.pos > 0) {
+        state.pos--;
+        state.typed[state.pos] = undefined;
+        prevKeystroke = null; // break adjacency; next transition won't be recorded
+        render();
+      }
+      return;
+    }
+
+    if (e.key.length !== 1) return; // ignore non-character keys (arrows etc)
+    e.preventDefault();
+
+    if (state.pos >= state.batch.length) return;
+
+    const expected = state.batch[state.pos];
+    const typed = e.key;
+
+    if (state.startTime === null) state.startTime = performance.now();
+
+    // Record transition timing if we have a valid adjacent previous correct keystroke.
+    const now = performance.now();
+    const isCorrect = (typed === expected);
+    if (isCorrect && prevKeystroke &&
+        prevKeystroke.wasCorrect &&
+        prevKeystroke.position === state.pos - 1 &&
+        expected !== ' ' && prevKeystroke.expectedChar !== ' ') {
+      recordTransition(prevKeystroke.expectedChar, expected, now - prevKeystroke.time);
+    }
+    prevKeystroke = { position: state.pos, time: now, expectedChar: expected, wasCorrect: isCorrect };
+
+    if (typed === expected) {
+      if (expected !== ' ') recordAttempt(expected, true);
+      state.typed[state.pos] = true;
+    } else {
+      state.errors++;
+      state.totalErrors++;
+      if (expected !== ' ') recordAttempt(expected, false);
+      state.keyErrors[expected] = (state.keyErrors[expected] || 0) + 1;
+      state.typed[state.pos] = false;
+      updateHeatmap();
+    }
+    state.pos++;
+    render();
+    if (state.pos === state.batch.length) {
+      completeBatch();
+    }
+    updateLiveStats();
+    renderProgression();
+  });
+
+  function flashError(idx) { /* deprecated: incorrect chars now stay marked via state.typed[] */ }
+
+  // ---- STATS ----
+  let liveInterval = null;
+  function correctCount() {
+    let n = 0;
+    for (let i = 0; i < state.pos; i++) if (state.typed[i]) n++;
+    return n;
+  }
+  function updateLiveStats() {
+    const cpmEl = document.getElementById('stat-cpm');
+    const errEl = document.getElementById('stat-err');
+    const correct = correctCount();
+    if (state.startTime && correct > 0) {
+      const elapsed = (performance.now() - state.startTime) / 1000 / 60; // min
+      const cpm = Math.round(correct / elapsed);
+      cpmEl.innerHTML = `${cpm}<span class="unit">cpm</span>`;
+    } else {
+      cpmEl.innerHTML = `0<span class="unit">cpm</span>`;
+    }
+    errEl.textContent = state.errors;
+
+    if (state.startTime && !liveInterval) {
+      liveInterval = setInterval(() => {
+        if (state.startTime && state.pos > 0 && state.pos < state.batch.length) {
+          const c = correctCount();
+          if (c > 0) {
+            const elapsed = (performance.now() - state.startTime) / 1000 / 60;
+            const cpm = Math.round(c / elapsed);
+            cpmEl.innerHTML = `${cpm}<span class="unit">cpm</span>`;
+          }
+        }
+      }, 200);
+    }
+  }
+
+  function completeBatch() {
+    if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+    const elapsed = (performance.now() - state.startTime) / 1000 / 60;
+    const correct = correctCount();
+    const cpm = Math.round(correct / elapsed);
+    const acc = Math.round((correct / state.batch.length) * 100);
+    state.batches++;
+
+    state.history.unshift({
+      content: state.batch,
+      cpm: cpm,
+      acc: acc,
+      errors: state.errors,
+      time: new Date()
+    });
+    if (state.history.length > 20) state.history.pop();
+
+    document.getElementById('stat-acc').innerHTML = `${acc}<span class="unit">%</span>`;
+    document.getElementById('stat-batches').textContent = state.batches;
+
+    renderHistory();
+    renderProgression();
+    persist();
+
+    // brief celebration
+    card.style.borderColor = 'var(--accent)';
+    setTimeout(() => {
+      card.style.borderColor = '';
+      newBatch();
+      focusInput();
+    }, 600);
+  }
+
+  function renderHistory() {
+    const listEl = document.getElementById('history-list');
+    if (state.history.length === 0) {
+      listEl.innerHTML = '<div class="history-row" style="color:var(--dim); border-left-color:transparent;"><div class="history-content" style="font-style:italic">— complete a batch to see results —</div><div></div><div></div><div></div></div>';
+      return;
+    }
+    listEl.innerHTML = state.history.map(h => {
+      const accClass = h.acc >= 95 ? 'accent' : '';
+      return `
+        <div class="history-row">
+          <div class="history-content">${h.content.replace(/</g,'&lt;')}</div>
+          <div class="history-metric ${accClass}">${h.cpm} cpm</div>
+          <div class="history-metric">${h.acc}%</div>
+          <div class="history-metric">${h.errors} err</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // ---- PROGRESSION RENDERING ----
+  let lastUnlockedSize = 0;
+  function renderProgression() {
+    const section = document.getElementById('progress-section');
+    const container = document.getElementById('progress-keys');
+    const status = document.getElementById('progress-status');
+    const hint = document.getElementById('progress-hint');
+
+    if (state.progression === 'off') {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = 'block';
+
+    const unlocked = unlockedKeys();
+    let masteredCount = 0;
+    PROGRESSION_ORDER.forEach(k => { if (isMastered(k)) masteredCount++; });
+
+    status.textContent = `${masteredCount} / ${PROGRESSION_ORDER.length} mastered`;
+
+    container.innerHTML = PROGRESSION_ORDER.map(k => {
+      const acc = keyAccuracy(k);
+      const isUnlocked = unlocked.has(k);
+      const mastered = isMastered(k);
+      const stat = getKeyStat(k);
+      const attempts = stat.attempts.length;
+
+      let cls = 'pkey';
+      if (mastered) cls += ' mastered';
+      else if (isUnlocked) cls += ' unlocked active';
+      else cls += ' locked';
+
+      // progress bar shows: attempts toward minimum, then accuracy toward 95%
+      let progressPct = 0;
+      if (isUnlocked && !mastered) {
+        if (attempts < MASTERY_MIN_ATTEMPTS) {
+          progressPct = (attempts / MASTERY_MIN_ATTEMPTS) * 50; // first half = attempts
+        } else if (acc !== null) {
+          progressPct = 50 + Math.min(50, ((acc - 0.5) / 0.45) * 50); // accuracy 50%→95% maps to 50→100
+          progressPct = Math.max(50, Math.min(100, progressPct));
+        }
+      } else if (mastered) {
+        progressPct = 100;
+      }
+
+      const accStr = acc !== null ? Math.round(acc * 100) + '%' : '';
+      return `<div class="${cls}" style="--p:${progressPct}%">
+        <span>${k}</span>
+        ${isUnlocked && accStr ? `<span class="pkey-acc">${accStr}</span>` : ''}
+      </div>`;
+    }).join('');
+
+    // Detect newly unlocked
+    if (unlocked.size > lastUnlockedSize && lastUnlockedSize > 0) {
+      section.classList.remove('unlock-flash');
+      void section.offsetWidth; // restart animation
+      section.classList.add('unlock-flash');
+      const newest = PROGRESSION_ORDER[unlocked.size - 1];
+      hint.innerHTML = `<strong>Unlocked: ${newest}</strong> — added to your batches.`;
+      setTimeout(() => {
+        hint.innerHTML = `Hit <strong>95% accuracy</strong> on a key to master it and unlock the next one.`;
+      }, 3500);
+    }
+    lastUnlockedSize = unlocked.size;
+  }
+
+  // ---- PROGRESSION RENDERING END ----
+
+  // ---- HEATMAP ----
+  const KEYPAD_KEYS = [
+    {label: '7', span: 1}, {label: '8', span: 1}, {label: '9', span: 1}, {label: '/', span: 1},
+    {label: '4', span: 1}, {label: '5', span: 1}, {label: '6', span: 1}, {label: '*', span: 1},
+    {label: '1', span: 1}, {label: '2', span: 1}, {label: '3', span: 1}, {label: '-', span: 1},
+    {label: '0', span: 2, cls: 'zero'}, {label: '.', span: 1}, {label: '+', span: 1}
+  ];
+
+  function renderKeypad() {
+    const pad = document.getElementById('keypad');
+    pad.innerHTML = KEYPAD_KEYS.map(k => {
+      const errs = state.keyErrors[k.label] || 0;
+      return `<div class="key ${k.cls || ''}" data-key="${k.label}">
+        <div class="key-label">${k.label === ' ' ? '␣' : k.label}</div>
+        <div class="key-stat">${errs} err</div>
+      </div>`;
+    }).join('');
+  }
+
+  function updateHeatmap() {
+    const maxErr = Math.max(1, ...Object.values(state.keyErrors));
+    document.querySelectorAll('.key').forEach(el => {
+      const k = el.dataset.key;
+      const errs = state.keyErrors[k] || 0;
+      const statEl = el.querySelector('.key-stat');
+      if (statEl) statEl.textContent = `${errs} err`;
+      const intensity = errs / maxErr;
+      if (errs === 0) {
+        el.style.background = 'var(--bg-2)';
+        el.style.borderColor = 'var(--line)';
+      } else {
+        const alpha = 0.15 + intensity * 0.5;
+        el.style.background = `rgba(255, 107, 91, ${alpha})`;
+        el.style.borderColor = `rgba(255, 107, 91, ${0.3 + intensity * 0.5})`;
+      }
+    });
+  }
+
+  // ---- SETTINGS HANDLERS ----
+  document.querySelectorAll('#mode-group .chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#mode-group .chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.mode = btn.dataset.mode;
+      newBatch();
+      focusInput();
+      persist();
+    });
+  });
+
+  document.querySelectorAll('#length-group .chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#length-group .chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.lenBucket = btn.dataset.len;
+      newBatch();
+      focusInput();
+      persist();
+    });
+  });
+
+  document.querySelectorAll('#prog-group .chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#prog-group .chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.progression = btn.dataset.prog;
+      lastUnlockedSize = 0;
+      renderProgression();
+      newBatch();
+      focusInput();
+      persist();
+    });
+  });
+
+  document.getElementById('clear-history').addEventListener('click', () => {
+    state.history = [];
+    state.keyErrors = {};
+    state.batches = 0;
+    state.totalErrors = 0;
+    Object.keys(keyStats).forEach(k => delete keyStats[k]);
+    Object.keys(transitionTimes).forEach(k => delete transitionTimes[k]);
+    lastUnlockedSize = 0;
+    document.getElementById('stat-batches').textContent = '0';
+    document.getElementById('stat-acc').innerHTML = '—<span class="unit">%</span>';
+    renderHistory();
+    updateHeatmap();
+    renderProgression();
+    newBatch();
+    persist();
+  });
+
+  // ---- PERSISTENCE (via window.storage) ----
+  async function persist() {
+    try {
+      await window.storage.set('numpadr-state', JSON.stringify({
+        mode: state.mode,
+        lenBucket: state.lenBucket,
+        progression: state.progression,
+        history: state.history.slice(0, 20),
+        keyErrors: state.keyErrors,
+        keyStats: keyStats,
+        transitionTimes: transitionTimes,
+        batches: state.batches
+      }));
+    } catch (e) { /* storage unavailable, ignore */ }
+  }
+
+  async function loadPersisted() {
+    try {
+      const r = await window.storage.get('numpadr-state');
+      if (r && r.value) {
+        const data = JSON.parse(r.value);
+        if (data.mode) state.mode = data.mode;
+        if (data.lenBucket) state.lenBucket = data.lenBucket;
+        if (data.progression) state.progression = data.progression;
+        if (data.history) state.history = data.history;
+        if (data.keyErrors) state.keyErrors = data.keyErrors;
+        if (data.batches) state.batches = data.batches;
+        if (data.keyStats) {
+          Object.keys(data.keyStats).forEach(k => {
+            keyStats[k] = data.keyStats[k];
+          });
+        }
+        if (data.transitionTimes) {
+          Object.keys(data.transitionTimes).forEach(k => {
+            transitionTimes[k] = data.transitionTimes[k];
+          });
+        }
+
+        document.querySelectorAll('#mode-group .chip').forEach(b => {
+          b.classList.toggle('active', b.dataset.mode === state.mode);
+        });
+        document.querySelectorAll('#length-group .chip').forEach(b => {
+          b.classList.toggle('active', b.dataset.len === state.lenBucket);
+        });
+        document.querySelectorAll('#prog-group .chip').forEach(b => {
+          b.classList.toggle('active', b.dataset.prog === state.progression);
+        });
+        document.getElementById('stat-batches').textContent = state.batches;
+        renderHistory();
+      }
+    } catch (e) { /* no data yet */ }
+  }
+
+  // ---- INIT ----
+  (async function init() {
+    renderKeypad();
+    await loadPersisted();
+    updateHeatmap();
+    lastUnlockedSize = unlockedKeys().size; // initialize without flashing
+    renderProgression();
+    newBatch();
+    focusInput();
+  })();
+</script>
+</body>
+</html>
