@@ -1,0 +1,2664 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>morsekey — adaptive morse trainer</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&display=swap" rel="stylesheet">
+
+<!-- React + Babel + Tailwind, all from CDN so this stays a single static file servable by plain Apache. -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // The KeyboardPanel uses md:grid-cols-13, which isn't in Tailwind's default scale.
+  tailwind.config = {
+    theme: { extend: { gridTemplateColumns: { '13': 'repeat(13, minmax(0, 1fr))' } } }
+  };
+</script>
+
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { background: #fafaf7; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+// ---------- ENVIRONMENT SHIMS ----------
+// The original artifact ran inside Anthropic's sandbox, which provides React/lucide as imports
+// and a `window.storage` async key/value API. Here we are a plain static page, so:
+//   * React hooks come off the global React (loaded above)
+//   * lucide-react icons are reimplemented as tiny inline-SVG components
+//   * window.storage is backed by localStorage (same {value} shape the app expects)
+const { useState, useEffect, useRef, useCallback } = React;
+
+if (!window.storage) {
+  window.storage = {
+    async get(key) {
+      const v = localStorage.getItem(key);
+      return v === null ? null : { value: v };
+    },
+    async set(key, value) {
+      try { localStorage.setItem(key, value); } catch {}
+    },
+  };
+}
+
+// ---------- ICONS (inline SVG, drop-in for lucide-react) ----------
+function Icon({ size = 24, className = '', children }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+         strokeLinejoin="round" className={className}>
+      {children}
+    </svg>
+  );
+}
+const Volume2 = (p) => (
+  <Icon {...p}>
+    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+  </Icon>
+);
+const VolumeX = (p) => (
+  <Icon {...p}>
+    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+    <line x1="22" y1="9" x2="16" y2="15" />
+    <line x1="16" y1="9" x2="22" y2="15" />
+  </Icon>
+);
+const Settings = (p) => (
+  <Icon {...p}>
+    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+    <circle cx="12" cy="12" r="3" />
+  </Icon>
+);
+const RotateCcw = (p) => (
+  <Icon {...p}>
+    <polyline points="1 4 1 10 7 10" />
+    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+  </Icon>
+);
+const Info = (p) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="16" x2="12" y2="12" />
+    <line x1="12" y1="8" x2="12.01" y2="8" />
+  </Icon>
+);
+const X = (p) => (
+  <Icon {...p}>
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </Icon>
+);
+
+// ========== ORIGINAL APP (verbatim, minus the import/export lines) ==========
+
+// ---------- MORSE DATA ----------
+const MORSE = {
+  A: '.-', B: '-...', C: '-.-.', D: '-..', E: '.', F: '..-.', G: '--.', H: '....',
+  I: '..', J: '.---', K: '-.-', L: '.-..', M: '--', N: '-.', O: '---', P: '.--.',
+  Q: '--.-', R: '.-.', S: '...', T: '-', U: '..-', V: '...-', W: '.--', X: '-..-',
+  Y: '-.--', Z: '--..',
+};
+
+// Order letters are introduced — by Morse code length (shorter first), then alphabetical
+const INTRO_ORDER = ['E','T','A','I','M','N','D','G','K','O','R','S','U','W','B','C','F','H','J','L','P','Q','V','X','Y','Z'];
+
+// ---------- AUDIO ENGINE ----------
+// Farnsworth timing: characters are sent at `charWpm` (held at >= 18 so they sound natural),
+// while inter-character and inter-word gaps are stretched so the *effective* throughput
+// matches the user's goal WPM. Once goalWpm >= charWpm, both speeds align (no Farnsworth
+// padding) and you're at full speed.
+const CHAR_WPM_MIN = 18;
+
+class MorseAudio {
+  constructor() {
+    this.ctx = null;
+    this.muted = false;
+    this.goalWpm = 12;   // user's target throughput
+    this.freq = 600;
+  }
+  // Effective character speed — never slower than CHAR_WPM_MIN so individual letters
+  // always sound like proper Morse rhythm rather than slow individual beeps.
+  get charWpm() { return Math.max(CHAR_WPM_MIN, this.goalWpm); }
+  // Duration of one dit at character speed, in seconds
+  get charUnitS() { return 1.2 / this.charWpm; }
+  // Extra padding per "PARIS" unit (19 elements per word) to stretch from char speed to goal speed.
+  // = 0 once goalWpm >= charWpm.
+  get extraPerUnitS() {
+    const c = this.charWpm, s = this.goalWpm;
+    if (s >= c) return 0;
+    return (60 / s - 60 / c) / 19;
+  }
+  // Inter-letter gap: 3 char-units plus 3 extra units of padding
+  get interLetterGapS() { return 3 * this.charUnitS + 3 * this.extraPerUnitS; }
+  // Inter-word gap (in addition to the inter-letter gap, i.e. how much MORE silence to
+  // add for a word break beyond a normal letter gap): an extra 4 units of char + extra padding
+  get extraWordGapS() { return 4 * this.charUnitS + 4 * this.extraPerUnitS; }
+
+  ensure() {
+    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+  }
+  // Returns the current audio-clock time in seconds. Returns 0 if context isn't ready.
+  audioNow() {
+    if (!this.ctx) return 0;
+    return this.ctx.currentTime;
+  }
+  // Schedule one or more letters at audio-precise times. Inter-letter gap uses Farnsworth.
+  // Returns { startAt, endAt (last tone's end, NOT including trailing gap), charStartTimes }.
+  scheduleSequence(chars, { startAt = null } = {}) {
+    if (this.muted) return { startAt: 0, endAt: 0, charStartTimes: [] };
+    this.ensure();
+    const u = this.charUnitS;
+    const interLetter = this.interLetterGapS;
+    let t = startAt ?? (this.ctx.currentTime + 0.03);
+    const begin = t;
+    const charStartTimes = [];
+    let lastToneEnd = t;
+    for (let idx = 0; idx < chars.length; idx++) {
+      const ch = chars[idx].toUpperCase();
+      charStartTimes.push(t);
+      const code = MORSE[ch];
+      if (!code) { t += interLetter; continue; }
+      for (let i = 0; i < code.length; i++) {
+        const dur = (code[i] === '.' ? 1 : 3) * u;
+        this.tone(t, dur);
+        t += dur;
+        if (i < code.length - 1) t += u; // intra-letter gap (always 1 char-unit)
+      }
+      lastToneEnd = t;
+      if (idx < chars.length - 1) t += interLetter;
+    }
+    return { startAt: begin, endAt: lastToneEnd, charStartTimes };
+  }
+  tone(start, dur) {
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.frequency.value = this.freq;
+    osc.type = 'sine';
+    const ramp = 0.005;
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(0.3, start + ramp);
+    gain.gain.setValueAtTime(0.3, start + Math.max(dur - ramp, ramp));
+    gain.gain.linearRampToValueAtTime(0, start + dur);
+    osc.connect(gain).connect(this.ctx.destination);
+    osc.start(start);
+    osc.stop(start + dur + 0.01);
+    // Track for cancelScheduled(). We prune entries whose stopAt is in the past so the list
+    // doesn't grow without bound in a long session.
+    if (!this.scheduled) this.scheduled = [];
+    const stopAt = start + dur + 0.01;
+    this.scheduled.push({ osc, gain, stopAt });
+    const cutoff = this.ctx.currentTime - 0.1;
+    this.scheduled = this.scheduled.filter(s => s.stopAt > cutoff);
+  }
+  // Cancel any tones scheduled in the future, used when restarting a batch (e.g. flow-mode
+  // toggle mid-batch). Tones already audible are faded out quickly. Tones whose start hasn't
+  // arrived yet are stopped before they begin.
+  cancelScheduled() {
+    if (!this.scheduled || !this.ctx) return;
+    const now = this.ctx.currentTime;
+    for (const { osc, gain, stopAt } of this.scheduled) {
+      if (stopAt <= now) continue; // already finished
+      try {
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setValueAtTime(gain.gain.value, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.01);
+        osc.stop(now + 0.02);
+      } catch {}
+    }
+    this.scheduled = [];
+  }
+  // Live keying: start a sustained tone, stop on release
+  startLiveTone() {
+    if (this.muted) return;
+    this.ensure();
+    if (this.liveOsc) this.stopLiveTone();
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.frequency.value = this.freq;
+    osc.type = 'sine';
+    const now = this.ctx.currentTime;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.3, now + 0.005);
+    osc.connect(gain).connect(this.ctx.destination);
+    osc.start(now);
+    this.liveOsc = osc;
+    this.liveGain = gain;
+  }
+  stopLiveTone() {
+    if (!this.liveOsc) return;
+    const now = this.ctx.currentTime;
+    try {
+      this.liveGain.gain.cancelScheduledValues(now);
+      this.liveGain.gain.setValueAtTime(this.liveGain.gain.value, now);
+      this.liveGain.gain.linearRampToValueAtTime(0, now + 0.005);
+      this.liveOsc.stop(now + 0.02);
+    } catch {}
+    this.liveOsc = null;
+    this.liveGain = null;
+  }
+}
+
+const audio = new MorseAudio();
+
+// ---------- ADAPTIVE ENGINE ----------
+// Reaction-time target scales with the user's goal WPM: faster goal = tighter expectations.
+// Roughly 1.5 character-periods at the goal speed.
+function targetReactionMs() {
+  const w = (typeof audio !== 'undefined' && audio.goalWpm) ? audio.goalWpm : 12;
+  return Math.max(500, 18000 / w);
+}
+const MIN_SAMPLES_PER_KEY = 4;
+const UNLOCK_AVG_SCORE = 0.85;
+const RECENT_WINDOW = 10;
+
+function computeKeyScore(samples) {
+  if (!samples || samples.length === 0) return 0;
+  const recent = samples.slice(-RECENT_WINDOW);
+  const correct = recent.filter(s => s.correct).length;
+  const acc = correct / recent.length;
+  const correctSamples = recent.filter(s => s.correct);
+  let timeScore = 0;
+  if (correctSamples.length > 0) {
+    const avgMs = correctSamples.reduce((a,b) => a + b.ms, 0) / correctSamples.length;
+    const target = targetReactionMs();
+    timeScore = Math.max(0, Math.min(1, (target * 2 - avgMs) / target));
+  }
+  const sampleConfidence = Math.min(1, recent.length / MIN_SAMPLES_PER_KEY);
+  const raw = 0.6 * acc + 0.4 * timeScore;
+  return raw * sampleConfidence;
+}
+
+function pickWeightedLetter(unlocked, stats) {
+  const weights = unlocked.map(c => {
+    const score = computeKeyScore(stats[c]?.samples);
+    return Math.max(0.15, 1.2 - score);
+  });
+  const total = weights.reduce((a,b) => a+b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < unlocked.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return unlocked[i];
+  }
+  return unlocked[unlocked.length - 1];
+}
+
+function pickNextLetter(unlocked, stats, avoid = null) {
+  let c, tries = 0;
+  do { c = pickWeightedLetter(unlocked, stats); tries++; }
+  while (c === avoid && tries < 5 && unlocked.length > 1);
+  return c;
+}
+
+function shouldUnlockNext(unlocked, stats) {
+  if (unlocked.length < 2) return false;
+  const scores = unlocked.map(c => {
+    const s = stats[c]?.samples;
+    if (!s || s.length < MIN_SAMPLES_PER_KEY) return null;
+    return computeKeyScore(s);
+  });
+  if (scores.includes(null)) return false;
+  const avg = scores.reduce((a,b)=>a+b,0) / scores.length;
+  return avg >= UNLOCK_AVG_SCORE;
+}
+
+// ---------- MAIN APP ----------
+function App() {
+  const [mode, setMode] = useState('receive'); // 'receive' (listen→type) or 'send' (key→morse)
+  const [muted, setMuted] = useState(false);
+  const [wpm, setWpm] = useState(12);
+  // Whether receive batches include word breaks (longer silences between words that the user
+  // must press space to advance past). Off = continuous letter stream, useful early on when
+  // recognising letters is enough cognitive load on its own.
+  const [wordBreaks, setWordBreaks] = useState(true);
+  // Whether the Send-mode conveyor shows the target rhythm during keying. Off = blind practice:
+  // the user keys from memory of the morse pattern shown above, and the target lane only
+  // reveals after the character is finished, so they can compare against what they did.
+  const [hideTarget, setHideTarget] = useState(false);
+  // Receive flow: 'step' = one letter at a time, user types each before next plays;
+  // 'run' = whole batch streams at goal speed continuously, user copies behind into a buffer.
+  // Run mode is closer to real Morse copy practice — the audio doesn't stall on misses.
+  const [flowMode, setFlowMode] = useState('step');
+  // Send-mode key style: 'straight' = one key, user controls duration (dit vs dah by how long
+  // you hold), trains rhythm/fist. 'paddle' = two keys, one for dit and one for dah, the trainer
+  // emits a perfectly-timed shape per tap. Paddle mode isolates pattern recall from timing —
+  // useful once you know the letters but want to focus on which-shape-when. Default straight
+  // for newcomers.
+  const [keyMode, setKeyMode] = useState('straight');
+  // Per-mode progress
+  const [progress, setProgress] = useState({
+    receive: { unlocked: ['E','T'], stats: {} },
+    send:    { unlocked: ['E','T'], stats: {} },
+  });
+  const [showSettings, setShowSettings] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
+  const [unlockToast, setUnlockToast] = useState(null);
+
+  // Convenience getters for the active mode
+  const unlocked = progress[mode].unlocked;
+  const stats = progress[mode].stats;
+
+  // Load persisted state (with migration from old single-track schema)
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get('morse-keybr-state');
+        if (r) {
+          const obj = JSON.parse(r.value);
+          // New schema
+          if (obj.progress) {
+            setProgress({
+              receive: obj.progress.receive || { unlocked: ['E','T'], stats: {} },
+              send:    obj.progress.send    || { unlocked: ['E','T'], stats: {} },
+            });
+          }
+          // Migration from old schema (single unlocked/stats)
+          else if (obj.unlocked || obj.stats) {
+            const old = { unlocked: obj.unlocked || ['E','T'], stats: obj.stats || {} };
+            setProgress({ receive: old, send: { unlocked: ['E','T'], stats: {} } });
+          }
+          if (typeof obj.wpm === 'number') { setWpm(obj.wpm); audio.goalWpm = obj.wpm; }
+          if (typeof obj.muted === 'boolean') { setMuted(obj.muted); audio.muted = obj.muted; }
+          if (typeof obj.wordBreaks === 'boolean') { setWordBreaks(obj.wordBreaks); }
+          if (typeof obj.hideTarget === 'boolean') { setHideTarget(obj.hideTarget); }
+          if (obj.flowMode === 'run' || obj.flowMode === 'step') { setFlowMode(obj.flowMode); }
+          if (obj.keyMode === 'paddle' || obj.keyMode === 'straight') { setKeyMode(obj.keyMode); }
+        }
+      } catch {}
+    })();
+  }, []);
+
+  // Persist takes an options object so adding a new setting doesn't require touching every
+  // call site. Unspecified fields fall back to the latest state value.
+  const persist = useCallback(async (overrides = {}) => {
+    try {
+      const payload = {
+        progress, wpm, muted, wordBreaks, hideTarget, flowMode, keyMode,
+        ...overrides,
+      };
+      await window.storage.set('morse-keybr-state', JSON.stringify(payload));
+    } catch {}
+  }, [progress, wpm, muted, wordBreaks, hideTarget, flowMode, keyMode]);
+
+  // Record a sample for the *current* mode
+  const recordSample = useCallback((char, correct, ms) => {
+    setProgress(prev => {
+      const lane = prev[mode];
+      const cur = lane.stats[char]?.samples || [];
+      const samples = [...cur, { correct, ms }].slice(-30);
+      const newStats = { ...lane.stats, [char]: { samples } };
+      let newUnlocked = lane.unlocked;
+      // Check unlock
+      if (shouldUnlockNext(lane.unlocked, newStats) && lane.unlocked.length < INTRO_ORDER.length) {
+        const nextChar = INTRO_ORDER.find(c => !lane.unlocked.includes(c));
+        if (nextChar) {
+          newUnlocked = [...lane.unlocked, nextChar];
+          setUnlockToast({ char: nextChar, mode });
+          setTimeout(() => setUnlockToast(null), 3500);
+        }
+      }
+      const nextProgress = {
+        ...prev,
+        [mode]: { unlocked: newUnlocked, stats: newStats },
+      };
+      persist({ progress: nextProgress });
+      return nextProgress;
+    });
+  }, [mode, persist]);
+
+  const updateWpm = (w) => {
+    setWpm(w); audio.goalWpm = w;
+    persist({ wpm: w });
+  };
+  const toggleMute = () => {
+    const m = !muted; setMuted(m); audio.muted = m;
+    persist({ muted: m });
+  };
+  const toggleWordBreaks = () => {
+    const wb = !wordBreaks;
+    setWordBreaks(wb);
+    persist({ wordBreaks: wb });
+  };
+  const toggleHideTarget = () => {
+    const ht = !hideTarget;
+    setHideTarget(ht);
+    persist({ hideTarget: ht });
+  };
+  const toggleFlowMode = () => {
+    const fm = flowMode === 'run' ? 'step' : 'run';
+    setFlowMode(fm);
+    persist({ flowMode: fm });
+  };
+  const toggleKeyMode = () => {
+    const km = keyMode === 'paddle' ? 'straight' : 'paddle';
+    setKeyMode(km);
+    persist({ keyMode: km });
+  };
+
+  const resetProgress = () => {
+    if (!confirm('Reset all progress for both modes? This cannot be undone.')) return;
+    const fresh = {
+      receive: { unlocked: ['E','T'], stats: {} },
+      send:    { unlocked: ['E','T'], stats: {} },
+    };
+    setProgress(fresh);
+    persist({ progress: fresh });
+    setShowSettings(false);
+  };
+
+  return (
+    <div className="min-h-screen w-full" style={{
+      background: '#fafaf7',
+      fontFamily: '"Inter Tight", "Inter", system-ui, sans-serif',
+      color: '#1a1a1a'
+    }}>
+      <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&display=swap" rel="stylesheet" />
+
+      <style>{`
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        .display { font-family: 'Fraunces', Georgia, serif; }
+        @keyframes slide-down { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+        .slide-down { animation: slide-down 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+        .fade-in { animation: fade-in 0.3s ease-out forwards; }
+        @keyframes pulse-active { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+        .pulse-active { animation: pulse-active 0.3s ease-in-out; }
+        @keyframes shake-x {
+          0%, 100% { transform: translateX(0); }
+          15% { transform: translateX(-6px); }
+          30% { transform: translateX(5px); }
+          45% { transform: translateX(-4px); }
+          60% { transform: translateX(3px); }
+          75% { transform: translateX(-2px); }
+        }
+        .shake-x { animation: shake-x 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97); }
+        input, button { font-family: inherit; }
+        input:focus { outline: none; }
+      `}</style>
+
+      <Header
+        mode={mode} setMode={setMode}
+        muted={muted} toggleMute={toggleMute}
+        onSettings={() => setShowSettings(true)}
+        onInfo={() => setShowInfo(true)}
+      />
+
+      <main className="max-w-4xl mx-auto px-6 pb-20">
+        {mode === 'receive' ? (
+          <Trainer
+            unlocked={unlocked}
+            stats={stats}
+            recordSample={recordSample}
+            wpm={wpm}
+            wordBreaks={wordBreaks}
+            flowMode={flowMode}
+            toggleFlowMode={toggleFlowMode}
+          />
+        ) : (
+          <Sender
+            unlocked={unlocked}
+            stats={stats}
+            recordSample={recordSample}
+            wpm={wpm}
+            hideTarget={hideTarget}
+            keyMode={keyMode}
+          />
+        )}
+        <KeyboardPanel unlocked={unlocked} stats={stats} mode={mode} />
+        <ProgressBar unlocked={unlocked} stats={stats} mode={mode} />
+      </main>
+
+      {showSettings && (
+        <Modal onClose={() => setShowSettings(false)}>
+          <SettingsPanel
+            wpm={wpm} setWpm={updateWpm}
+            muted={muted} toggleMute={toggleMute}
+            wordBreaks={wordBreaks} toggleWordBreaks={toggleWordBreaks}
+            hideTarget={hideTarget} toggleHideTarget={toggleHideTarget}
+            keyMode={keyMode} toggleKeyMode={toggleKeyMode}
+            onReset={resetProgress}
+            onClose={() => setShowSettings(false)}
+          />
+        </Modal>
+      )}
+
+      {showInfo && (
+        <Modal onClose={() => setShowInfo(false)}>
+          <InfoPanel onClose={() => setShowInfo(false)} />
+        </Modal>
+      )}
+
+      {unlockToast && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 slide-down z-50">
+          <div className="px-6 py-4 rounded-full shadow-2xl flex items-center gap-3" style={{ background: '#1a1a1a', color: '#fff' }}>
+            <span className="text-2xl">🔓</span>
+            <div>
+              <div className="text-xs uppercase tracking-widest opacity-60">
+                Unlocked in {unlockToast.mode} mode
+              </div>
+              <div className="display text-2xl font-bold">{unlockToast.char}<span className="ml-3 mono text-base opacity-70">{renderMorse(MORSE[unlockToast.char])}</span></div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- HEADER ----------
+function Header({ mode, setMode, muted, toggleMute, onSettings, onInfo }) {
+  return (
+    <header className="border-b border-stone-200">
+      <div className="max-w-4xl mx-auto px-6 py-5 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="w-9 h-9 rounded-lg flex items-center justify-center mono font-bold text-white" style={{ background: '#1a1a1a' }}>
+            <span className="text-xs leading-none tracking-tighter">·—</span>
+          </div>
+          <div className="hidden sm:block">
+            <div className="display text-xl font-bold leading-none">morsekey</div>
+            <div className="text-[10px] uppercase tracking-[0.2em] text-stone-500 mt-0.5">adaptive morse trainer</div>
+          </div>
+        </div>
+
+        {/* Mode toggle */}
+        <div className="flex items-center p-1 rounded-full bg-stone-100 border border-stone-200">
+          <button
+            onClick={() => setMode('receive')}
+            className={`px-4 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wider transition-all ${
+              mode === 'receive' ? 'bg-stone-900 text-white shadow-sm' : 'text-stone-500 hover:text-stone-800'
+            }`}
+          >
+            Receive
+          </button>
+          <button
+            onClick={() => setMode('send')}
+            className={`px-4 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wider transition-all ${
+              mode === 'send' ? 'bg-stone-900 text-white shadow-sm' : 'text-stone-500 hover:text-stone-800'
+            }`}
+          >
+            Send
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <button onClick={onInfo} className="p-2 rounded-lg hover:bg-stone-100 transition" title="How it works">
+            <Info size={18} className="text-stone-600" />
+          </button>
+          <button onClick={toggleMute} className="p-2 rounded-lg hover:bg-stone-100 transition">
+            {muted ? <VolumeX size={18} className="text-stone-400" /> : <Volume2 size={18} className="text-stone-700" />}
+          </button>
+          <button onClick={onSettings} className="p-2 rounded-lg hover:bg-stone-100 transition">
+            <Settings size={18} className="text-stone-600" />
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+// ---------- TRAINER ----------
+// Batch size: how many "words" per practice batch. Each word is 2–5 letters.
+const BATCH_WORD_COUNT = 5;
+const BATCH_WORD_MIN_LEN = 2;
+const BATCH_WORD_MAX_LEN = 5;
+
+function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, toggleFlowMode }) {
+  // Tape entries: { id, kind: 'letter'|'word', char, answered, typed?, correct?, ms?,
+  //                 mistakes? (count of wrong attempts), playedAtAudio? (audio-clock seconds) }
+  const [tape, setTape] = useState([]);
+  const [paused, setPaused] = useState(false);
+  // 'playing' while the batch is in progress; 'summary' once the user finishes the last entry.
+  const [phase, setPhase] = useState('playing');
+  // Stats for the just-completed batch (set when phase flips to 'summary')
+  const [batchStats, setBatchStats] = useState(null);
+  // History of completed batch summaries (for tiny trend strip)
+  const [history, setHistory] = useState([]);
+  // Visual playing flag — driven by setTimeouts pegged to audio-clock events. Best-effort,
+  // because React renders aren't sample-precise. Audio is canonical.
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [wrongFlash, setWrongFlash] = useState(0);
+  // On-screen keyboard feedback: which key the user just clicked (for a quick press effect),
+  // and which key was last submitted incorrectly (so we can briefly tint it red).
+  const [pressedKey, setPressedKey] = useState(null);
+  const [lastWrongKey, setLastWrongKey] = useState(null);
+
+  const tapeRef = useRef([]);
+  const cursorRef = useRef(0);
+  const inputRef = useRef(null);
+  const sessionStartedRef = useRef(false);
+  const nextIdRef = useRef(0);
+  // The audio-clock time at which the currently-playing (or last-played) letter's tones END.
+  // Used for spacing: the next letter starts no earlier than this + 3 units.
+  const lastEndAudioRef = useRef(0);
+  // The audio-clock time at which the currently-playing letter's first tone STARTS.
+  // Used for measuring reaction time.
+  const lastStartAudioRef = useRef(0);
+  // Audio-clock time when the FIRST letter of the batch started playing — for WPM calculation
+  const batchStartAudioRef = useRef(0);
+  const stopRequestedRef = useRef(false);
+  const pausedRef = useRef(false);
+  const phaseRef = useRef('playing');
+  const unlockedRef = useRef(unlocked);
+  const statsRef = useRef(stats);
+  const wordBreaksRef = useRef(wordBreaks);
+  const flowModeRef = useRef(flowMode);
+  const wrongFlashTimerRef = useRef(null);
+  const isPlayingTimerRef = useRef(null); // setTimeout that flips isPlaying back to false
+  const pressedKeyTimerRef = useRef(null); // setTimeout that clears the pressedKey highlight
+  // Run-mode: timer that fires when the whole batch finishes streaming (so finishBatch can
+  // run even if the user typed fewer chars than were sent).
+  const runEndTimerRef = useRef(null);
+
+  tapeRef.current = tape;
+  unlockedRef.current = unlocked;
+  statsRef.current = stats;
+  wordBreaksRef.current = wordBreaks;
+  flowModeRef.current = flowMode;
+  pausedRef.current = paused;
+  phaseRef.current = phase;
+
+  const syncTape = () => setTape([...tapeRef.current]);
+
+  // Build a fresh batch of BATCH_WORD_COUNT word-groups, optionally separated by word-break
+  // entries. With word breaks off the result is a continuous stream of the same total letter
+  // count — no spacebar entries to type, no extended silences in the audio.
+  const buildBatchTape = () => {
+    const entries = [];
+    const includeBreaks = wordBreaksRef.current;
+    let lastChar = null;
+    for (let w = 0; w < BATCH_WORD_COUNT; w++) {
+      const wordLen = BATCH_WORD_MIN_LEN +
+        Math.floor(Math.random() * (BATCH_WORD_MAX_LEN - BATCH_WORD_MIN_LEN + 1));
+      for (let i = 0; i < wordLen; i++) {
+        const ch = pickNextLetter(unlockedRef.current, statsRef.current, lastChar);
+        entries.push({
+          id: nextIdRef.current++, kind: 'letter', char: ch,
+          answered: false, mistakes: 0,
+        });
+        lastChar = ch;
+      }
+      if (includeBreaks && w < BATCH_WORD_COUNT - 1) {
+        entries.push({
+          id: nextIdRef.current++, kind: 'word', char: ' ',
+          answered: false, mistakes: 0,
+        });
+        lastChar = null; // word break — next word's first letter can be unconstrained
+      }
+    }
+    return entries;
+  };
+
+  // Schedule the entry at `cursor` for audio playback.
+  // `extraGapUnits` is silence to add before the audio (used after word breaks).
+  // Returns immediately — the audio is queued on the audio thread.
+  const scheduleCurrent = (extraGapUnits = 0) => {
+    if (stopRequestedRef.current || pausedRef.current) return;
+    const idx = cursorRef.current;
+    const entry = tapeRef.current[idx];
+    if (!entry || entry.kind !== 'letter') return;
+    if (entry.playedAtAudio) return; // already scheduled — don't re-schedule
+
+    audio.ensure();
+    const now = audio.audioNow();
+    // Inter-letter gap honours Farnsworth: stretches beyond 3 char-units when goalWpm < charWpm.
+    // Word break adds extra silence on top.
+    const minLead = 0.03;
+    const interLetterGap = audio.interLetterGapS;
+    const extraGap = extraGapUnits > 0 ? audio.extraWordGapS : 0;
+    const earliest = Math.max(
+      now + minLead,
+      lastEndAudioRef.current > 0 ? lastEndAudioRef.current + interLetterGap + extraGap : now + minLead
+    );
+
+    const sched = audio.scheduleSequence([entry.char], { startAt: earliest });
+    lastStartAudioRef.current = sched.startAt;
+    lastEndAudioRef.current = sched.endAt; // scheduleSequence for one letter returns the actual tone end (no trailing gap added)
+    // Stamp the moment the batch's first letter started — used for the achieved-WPM calculation
+    if (!batchStartAudioRef.current) batchStartAudioRef.current = sched.startAt;
+
+    // Stamp the entry with audio time
+    tapeRef.current[idx] = { ...entry, playedAtAudio: sched.startAt };
+    syncTape();
+
+    // Best-effort UI sync: flip isPlaying to true just before the audio starts, false after it ends
+    const startInMs = (sched.startAt - now) * 1000;
+    const endInMs = (lastEndAudioRef.current - now) * 1000;
+    if (isPlayingTimerRef.current) clearTimeout(isPlayingTimerRef.current);
+    setTimeout(() => setIsPlaying(true), Math.max(0, startInMs - 8));
+    isPlayingTimerRef.current = setTimeout(() => setIsPlaying(false), Math.max(0, endInMs));
+  };
+
+  // Replay the current letter — used by Replay button and on wrong keypresses
+  const replay = () => {
+    const idx = cursorRef.current;
+    const entry = tapeRef.current[idx];
+    if (!entry || entry.kind !== 'letter') return;
+    // Force re-schedule by clearing playedAtAudio
+    tapeRef.current[idx] = { ...entry, playedAtAudio: 0 };
+    // Reset lastEnd so we don't add unnecessary gap before the replay (treat as fresh start)
+    lastEndAudioRef.current = 0;
+    scheduleCurrent();
+  };
+
+  // Advance the cursor to the next entry. If the batch is over, flip to summary phase.
+  // `justLeftWordBreak` adds extra silence before the next letter (only relevant mid-batch).
+  const advance = (justLeftWordBreak) => {
+    cursorRef.current += 1;
+    syncTape();
+    if (cursorRef.current >= tapeRef.current.length) {
+      finishBatch();
+      return;
+    }
+    // In run mode, audio is pre-scheduled — no per-letter scheduling, no wait for space.
+    if (flowModeRef.current === 'run') return;
+    const next = tapeRef.current[cursorRef.current];
+    if (!next) return;
+    if (next.kind === 'word') return; // wait for space
+    scheduleCurrent(justLeftWordBreak ? 4 : 0);
+  };
+
+  // Compute summary stats for the just-finished batch and switch to summary phase.
+  const finishBatch = () => {
+    const entries = tapeRef.current;
+    const letters = entries.filter(e => e.kind === 'letter');
+    const lettersAnswered = letters.filter(e => e.answered);
+    const totalLetters = letters.length;
+    const totalMistakes = letters.reduce((a, e) => a + (e.mistakes || 0), 0);
+    const firstTryCount = letters.filter(e => (e.mistakes || 0) === 0 && e.answered).length;
+    const firstTryAcc = totalLetters > 0 ? firstTryCount / totalLetters : 0;
+    // Reaction time on correctly-typed letters only (misses don't have a meaningful "reaction
+    // time" — they're either guessed early or out of step with the audio).
+    const cleanReactions = lettersAnswered
+      .filter(e => (e.mistakes || 0) === 0 && typeof e.ms === 'number')
+      .map(e => e.ms);
+    const avgReactionMs = cleanReactions.length > 0
+      ? cleanReactions.reduce((a, b) => a + b, 0) / cleanReactions.length
+      : null;
+    // Achieved WPM: standard PARIS = 5 chars/word. Time the user took spans from the
+    // first letter's audio start to the moment the last letter was answered correctly.
+    const lastLetter = lettersAnswered[lettersAnswered.length - 1];
+    let achievedWpm = null;
+    let percentOfGoal = null;
+    if (lastLetter && batchStartAudioRef.current > 0) {
+      const lastAnswerAudio = lastLetter.playedAtAudio + lastLetter.ms / 1000;
+      const elapsedMin = (lastAnswerAudio - batchStartAudioRef.current) / 60;
+      if (elapsedMin > 0) {
+        achievedWpm = (totalLetters / 5) / elapsedMin;
+        percentOfGoal = Math.min(1, achievedWpm / wpm);
+      }
+    }
+    // Per-letter problem spots: letters in this batch with at least one mistake
+    const problemMap = {};
+    for (const e of letters) {
+      if (!problemMap[e.char]) problemMap[e.char] = { count: 0, mistakes: 0 };
+      problemMap[e.char].count += 1;
+      problemMap[e.char].mistakes += (e.mistakes || 0);
+    }
+    const problems = Object.entries(problemMap)
+      .filter(([, v]) => v.mistakes > 0)
+      .map(([ch, v]) => ({ char: ch, count: v.count, mistakes: v.mistakes }))
+      .sort((a, b) => b.mistakes - a.mistakes)
+      .slice(0, 5);
+
+    const summary = {
+      totalLetters,
+      totalMistakes,
+      firstTryAcc,
+      avgReactionMs,
+      achievedWpm,
+      percentOfGoal,
+      goalWpm: wpm,
+      problems,
+    };
+    setBatchStats(summary);
+    setHistory(h => [...h.slice(-9), { acc: firstTryAcc, achievedWpm, goalWpm: wpm }]);
+    setPhase('summary');
+    phaseRef.current = 'summary';
+  };
+
+  // Run-mode: schedule the entire batch back-to-back with proper Farnsworth gaps. No waiting
+  // on keypresses — the audio just streams. Stamps each letter entry's playedAtAudio so the
+  // submit logic can still compute reaction times when the user types behind the stream.
+  const scheduleRunBatch = () => {
+    audio.ensure();
+    const entries = tapeRef.current;
+    const u = audio.charUnitS;
+    const interLetter = audio.interLetterGapS;
+    const extraWord = audio.extraWordGapS;
+    let t = audio.audioNow() + 0.1; // small pre-roll
+    batchStartAudioRef.current = t;
+    let prevWasWord = false;
+    let lastToneEnd = t;
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e.kind === 'word') {
+        // Word break: add extra silence before the next letter
+        prevWasWord = true;
+        continue;
+      }
+      // Letter: pad in inter-letter gap (and extra word gap if we just left a word break)
+      if (i > 0) {
+        t += interLetter;
+        if (prevWasWord) t += extraWord;
+      }
+      prevWasWord = false;
+      const code = MORSE[e.char];
+      const startAt = t;
+      // Inline tone scheduling — mirrors MorseAudio.scheduleSequence for a single letter
+      if (code) {
+        for (let k = 0; k < code.length; k++) {
+          const dur = (code[k] === '.' ? 1 : 3) * u;
+          audio.tone(t, dur);
+          t += dur;
+          if (k < code.length - 1) t += u;
+        }
+      }
+      lastToneEnd = t;
+      entries[i] = { ...e, playedAtAudio: startAt };
+    }
+    tapeRef.current = entries;
+    syncTape();
+    lastEndAudioRef.current = lastToneEnd;
+    // Visual: pulse playing flag while the batch streams (rough — just on for the duration).
+    setIsPlaying(true);
+    if (isPlayingTimerRef.current) clearTimeout(isPlayingTimerRef.current);
+    const totalMs = (lastToneEnd - audio.audioNow()) * 1000;
+    isPlayingTimerRef.current = setTimeout(() => setIsPlaying(false), Math.max(0, totalMs));
+    // End-of-batch: when audio finishes, give a short grace period for trailing typing,
+    // then finish whether or not the user caught up.
+    if (runEndTimerRef.current) clearTimeout(runEndTimerRef.current);
+    const graceMs = 1500;
+    runEndTimerRef.current = setTimeout(() => {
+      if (phaseRef.current === 'playing') finishBatch();
+    }, Math.max(0, totalMs + graceMs));
+  };
+
+  // Begin a new batch: build a fresh tape and schedule audio.
+  const startNextBatch = () => {
+    // Reset all batch-scoped state
+    cursorRef.current = 0;
+    nextIdRef.current = 0;
+    lastEndAudioRef.current = 0;
+    lastStartAudioRef.current = 0;
+    batchStartAudioRef.current = 0;
+    setBatchStats(null);
+    setIsPlaying(false);
+    setWrongFlash(0);
+    if (isPlayingTimerRef.current) clearTimeout(isPlayingTimerRef.current);
+    if (wrongFlashTimerRef.current) clearTimeout(wrongFlashTimerRef.current);
+    if (runEndTimerRef.current) clearTimeout(runEndTimerRef.current);
+
+    const fresh = buildBatchTape();
+    tapeRef.current = fresh;
+    setTape(fresh);
+    setPhase('playing');
+    phaseRef.current = 'playing';
+    setPaused(false);
+    pausedRef.current = false;
+
+    audio.ensure();
+    inputRef.current?.focus();
+    if (flowModeRef.current === 'run') {
+      scheduleRunBatch();
+    } else {
+      scheduleCurrent();
+    }
+  };
+
+  // Core submission logic — shared between physical keyboard events and on-screen key clicks.
+  // `key` is a single uppercase letter or ' ' (space for word breaks). Returns true if the input
+  // was consumed (correct or incorrect), false if it was ignored (e.g. audio not ready yet).
+  const submitKey = (key) => {
+    // In run mode: word-break entries are auto-skipped — the user types letters continuously
+    // and word boundaries are inferred from audio timing, not a spacebar press. If the cursor
+    // is parked on a word break, mark it answered (no penalty) and recurse onto the next entry.
+    if (flowModeRef.current === 'run') {
+      while (true) {
+        const e = tapeRef.current[cursorRef.current];
+        if (!e || e.kind !== 'word') break;
+        tapeRef.current[cursorRef.current] = { ...e, answered: true, correct: true, typed: ' ', mistakes: 0 };
+        cursorRef.current += 1;
+      }
+      syncTape();
+    }
+
+    const idx = cursorRef.current;
+    const entry = tapeRef.current[idx];
+    if (!entry) return false;
+
+    // Don't accept input until the audio has actually started reaching the user.
+    if (entry.kind === 'letter') {
+      if (!entry.playedAtAudio) return false;
+      if (audio.audioNow() < entry.playedAtAudio) return false;
+    }
+    if (entry.kind === 'word') {
+      if (audio.audioNow() < lastEndAudioRef.current) return false;
+    }
+
+    const expected = entry.kind === 'word' ? ' ' : entry.char;
+    const correct = key === expected;
+    const ms = entry.kind === 'letter'
+      ? (audio.audioNow() - entry.playedAtAudio) * 1000
+      : 0;
+
+    if (entry.kind === 'letter') {
+      recordSample(entry.char, correct, ms);
+    }
+
+    // Mark answered either way — no replay on errors. Copy practice means commit and move on:
+    // a miss is data, not an invitation to listen again. Mistakes are still flagged in the
+    // summary and weighted heavier by the adaptive engine via recordSample.
+    tapeRef.current[idx] = {
+      ...entry,
+      answered: true,
+      typed: key,
+      correct,
+      ms,
+      mistakes: correct ? 0 : 1,
+    };
+    syncTape();
+
+    if (!correct) {
+      // Visual-only feedback for misses — no audio replay.
+      setLastWrongKey(key);
+      setWrongFlash(w => w + 1);
+      if (wrongFlashTimerRef.current) clearTimeout(wrongFlashTimerRef.current);
+      wrongFlashTimerRef.current = setTimeout(() => {
+        setWrongFlash(0);
+        setLastWrongKey(null);
+      }, 600);
+    }
+
+    advance(entry.kind === 'word');
+    return true;
+  };
+
+  const handleKey = (e) => {
+    // During summary, Enter/Space starts the next batch; ignore other keys.
+    if (phaseRef.current === 'summary') {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        startNextBatch();
+      }
+      return;
+    }
+
+    let key = e.key.toUpperCase();
+    if (e.key === ' ') key = ' ';
+    else if (!/^[A-Z]$/.test(key)) return;
+    e.preventDefault();
+    submitKey(key);
+  };
+
+  // On-screen keyboard click handler. Locked letters are filtered out at the button level,
+  // so anything reaching here is a valid candidate (still possibly wrong vs. the expected letter).
+  const handleKeyClick = (key) => {
+    if (phaseRef.current !== 'playing') return;
+    // Briefly flash the pressed key for visual feedback even on correct presses
+    setPressedKey(key);
+    if (pressedKeyTimerRef.current) clearTimeout(pressedKeyTimerRef.current);
+    pressedKeyTimerRef.current = setTimeout(() => setPressedKey(null), 120);
+    submitKey(key);
+    // Re-focus the hidden input so physical keystrokes still work after a click
+    inputRef.current?.focus();
+  };
+
+  const togglePause = () => {
+    const np = !pausedRef.current;
+    pausedRef.current = np;
+    setPaused(np);
+    if (!np) {
+      const cur = tapeRef.current[cursorRef.current];
+      if (cur && cur.kind === 'letter' && !cur.playedAtAudio) {
+        scheduleCurrent();
+      }
+    }
+  };
+
+  // Start session: build the first batch and schedule its audio
+  useEffect(() => {
+    if (sessionStartedRef.current) return;
+    sessionStartedRef.current = true;
+    audio.ensure();
+    const fresh = buildBatchTape();
+    tapeRef.current = fresh;
+    setTape(fresh);
+    // Focus and play first letter immediately — no setTimeout pre-roll
+    inputRef.current?.focus();
+    if (flowModeRef.current === 'run') {
+      scheduleRunBatch();
+    } else {
+      scheduleCurrent();
+    }
+    return () => {
+      stopRequestedRef.current = true;
+      audio.stopLiveTone();
+      audio.cancelScheduled();
+      if (isPlayingTimerRef.current) clearTimeout(isPlayingTimerRef.current);
+      if (wrongFlashTimerRef.current) clearTimeout(wrongFlashTimerRef.current);
+      if (pressedKeyTimerRef.current) clearTimeout(pressedKeyTimerRef.current);
+      if (runEndTimerRef.current) clearTimeout(runEndTimerRef.current);
+    };
+    // eslint-disable-next-line
+  }, []);
+
+  // When flowMode flips mid-session (user toggles Step ↔ Run, or persisted Run loads after
+  // the initial Step mount), cancel in-flight audio and restart the batch under the new mode.
+  // Skipped on the very first render because the session-start effect above handles that.
+  const prevFlowModeRef = useRef(flowMode);
+  useEffect(() => {
+    if (!sessionStartedRef.current) return;
+    if (prevFlowModeRef.current === flowMode) return;
+    prevFlowModeRef.current = flowMode;
+    audio.stopLiveTone();
+    audio.cancelScheduled();
+    if (isPlayingTimerRef.current) clearTimeout(isPlayingTimerRef.current);
+    if (runEndTimerRef.current) clearTimeout(runEndTimerRef.current);
+    startNextBatch();
+    // eslint-disable-next-line
+  }, [flowMode]);
+
+  // Compute view: window around cursor
+  const cursor = cursorRef.current;
+  // In step mode, the cursor cell pulses while its audio is playing. In run mode the cursor
+  // is the user's typing position (copying behind the audio stream), so we don't want a
+  // pulse pegged to it — that would imply the cell is currently sounding when it isn't.
+  const playing = (flowMode === 'step' && isPlaying) ? cursor : -1;
+  const WINDOW_LOOKAHEAD = 3;
+  const windowStart = Math.max(0, cursor - 4);
+  const windowEnd = Math.min(tape.length, cursor + WINDOW_LOOKAHEAD + 1);
+  const visibleEntries = tape.slice(windowStart, windowEnd);
+
+  // Mid-batch progress. With word breaks ON we show "word X / N"; with breaks OFF the tape
+  // has no word entries to count from, so we fall back to a letter counter.
+  const totalLetters = tape.filter(e => e.kind === 'letter').length;
+  const lettersDone = tape.slice(0, cursor).filter(e => e.kind === 'letter' && e.answered).length;
+  const wordBreaksTotal = tape.filter(e => e.kind === 'word').length;
+  const totalWords = wordBreaksTotal + 1; // BATCH_WORD_COUNT
+  const wordBreaksDone = tape.slice(0, cursor).filter(e => e.kind === 'word' && e.answered).length;
+
+  const showLetterProgress = wordBreaksTotal === 0;
+  const progressLabel = showLetterProgress ? 'letter' : 'word';
+  const progressTotal = showLetterProgress ? totalLetters : totalWords;
+  const progressCurrent = phase === 'summary'
+    ? progressTotal
+    : showLetterProgress
+      ? Math.min(progressTotal, lettersDone + 1)
+      : Math.min(progressTotal, wordBreaksDone + 1);
+
+  return (
+    <section className="py-10 mb-4 relative" onClick={() => inputRef.current?.focus()}>
+      <input
+        ref={inputRef}
+        onKeyDown={handleKey}
+        className="absolute opacity-0 pointer-events-none"
+        autoFocus
+        aria-label="Type the letters you hear"
+      />
+
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-[11px] uppercase tracking-[0.25em] text-stone-500 font-medium">
+          {phase === 'summary'
+            ? 'Batch complete'
+            : flowMode === 'run'
+              ? 'Listen and copy — let it stream, type what you hear'
+              : 'Listen and type — one letter at a time'}
+        </div>
+        <div className="text-[11px] uppercase tracking-[0.2em] text-stone-500">
+          {phase === 'playing' && (
+            <span>{progressLabel} <span className="text-stone-900 font-bold mono">{progressCurrent}</span> / {progressTotal}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Batch progress bar */}
+      {phase === 'playing' && (
+        <div className="h-0.5 bg-stone-200 rounded-full overflow-hidden mb-6">
+          <div
+            className="h-full bg-stone-900 transition-all duration-300 rounded-full"
+            style={{ width: `${((progressCurrent - 1) / Math.max(1, progressTotal)) * 100}%` }}
+          />
+        </div>
+      )}
+
+      {phase === 'playing' ? (
+        <>
+          <Tape entries={visibleEntries} cursor={cursor - windowStart} playing={playing - windowStart} wrongFlash={wrongFlash} />
+
+          <OnScreenKeyboard
+            unlocked={unlocked}
+            stats={stats}
+            currentEntry={tape[cursor]}
+            pressedKey={pressedKey}
+            lastWrongKey={lastWrongKey}
+            onKeyClick={handleKeyClick}
+          />
+
+          <div className="flex items-center justify-center gap-2 mt-6">
+            {/* Flow-mode toggle (Step ↔ Run) */}
+            <div className="flex items-center p-0.5 rounded-full bg-stone-100 border border-stone-200 mr-2">
+              <button
+                onClick={() => { if (flowMode !== 'step') toggleFlowMode(); }}
+                className={`px-3 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider transition-all ${
+                  flowMode === 'step' ? 'bg-stone-900 text-white shadow-sm' : 'text-stone-500 hover:text-stone-800'
+                }`}
+                title="One letter at a time — gated by your input"
+              >
+                Step
+              </button>
+              <button
+                onClick={() => { if (flowMode !== 'run') toggleFlowMode(); }}
+                className={`px-3 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider transition-all ${
+                  flowMode === 'run' ? 'bg-stone-900 text-white shadow-sm' : 'text-stone-500 hover:text-stone-800'
+                }`}
+                title="Whole batch streams at goal speed — copy behind"
+              >
+                Run
+              </button>
+            </div>
+
+            {flowMode === 'step' && (
+              <>
+                <button
+                  onClick={togglePause}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-stone-300 hover:border-stone-900 transition"
+                >
+                  {paused ? '▶ Resume' : '❚❚ Pause'}
+                </button>
+                <button
+                  onClick={replay}
+                  disabled={paused || isPlaying}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-stone-300 hover:border-stone-900 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <RotateCcw size={14} /> {isPlaying ? 'Playing…' : 'Replay'}
+                </button>
+              </>
+            )}
+            <div className="text-xs text-stone-500 mono ml-2">
+              {wpm} WPM
+            </div>
+          </div>
+        </>
+      ) : (
+        <BatchSummary stats={batchStats} history={history} onNext={startNextBatch} />
+      )}
+    </section>
+  );
+}
+
+// ---------- ON-SCREEN KEYBOARD ----------
+// QWERTY layout for click/tap input. Each key shows the letter and its morse pattern.
+// Colors mirror the bottom KeyboardPanel — locked letters are greyed out and unclickable;
+// unlocked letters are tinted by mastery score (red→orange→yellow→green).
+const KEYBOARD_ROWS = [
+  ['Q','W','E','R','T','Y','U','I','O','P'],
+  ['A','S','D','F','G','H','J','K','L'],
+  ['Z','X','C','V','B','N','M'],
+];
+
+function OnScreenKeyboard({ unlocked, stats, currentEntry, pressedKey, lastWrongKey, onKeyClick }) {
+  const isWordBreak = currentEntry?.kind === 'word';
+  // Hints removed: with no replay-on-error, every entry is one-shot and there's no escalation.
+  const expectedKey = null;
+  const hintWordBreak = false;
+
+  const colorFor = (c) => {
+    if (!unlocked.includes(c)) {
+      return { bg: '#f5f5f4', color: '#d6d3d1', border: '#e7e5e4' };
+    }
+    const samples = stats[c]?.samples;
+    if (!samples || samples.length < 2) {
+      return { bg: '#fff', color: '#1a1a1a', border: '#e7e5e4' };
+    }
+    const score = computeKeyScore(samples);
+    if (score >= 0.85) return { bg: '#dcfce7', color: '#14532d', border: '#86efac' };
+    if (score >= 0.65) return { bg: '#fef3c7', color: '#78350f', border: '#fcd34d' };
+    if (score >= 0.4)  return { bg: '#ffedd5', color: '#7c2d12', border: '#fdba74' };
+    return { bg: '#fee2e2', color: '#7f1d1d', border: '#fca5a5' };
+  };
+
+  return (
+    <div className="mt-8 select-none">
+      {KEYBOARD_ROWS.map((row, ri) => (
+        <div
+          key={ri}
+          className="flex justify-center gap-1 md:gap-1.5 mb-1 md:mb-1.5"
+          // Indent the home row and bottom row to mimic a real keyboard's stagger
+          style={{ paddingLeft: ri === 1 ? '1.25rem' : ri === 2 ? '2.5rem' : 0 }}
+        >
+          {row.map(c => {
+            const locked = !unlocked.includes(c);
+            const { bg, color, border } = colorFor(c);
+            const isExpected = expectedKey === c;
+            const isPressed = pressedKey === c;
+            const isWrong = lastWrongKey === c;
+            return (
+              <button
+                key={c}
+                onClick={() => !locked && onKeyClick(c)}
+                disabled={locked}
+                className={`relative flex-shrink-0 w-9 h-12 md:w-11 md:h-14 rounded-lg border flex flex-col items-center justify-center transition-all duration-100 ${
+                  locked ? 'cursor-not-allowed' : 'cursor-pointer hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 active:shadow-sm'
+                } ${isPressed ? 'pulse-active' : ''} ${isWrong ? 'shake-x' : ''}`}
+                style={{
+                  background: isWrong ? '#fef2f2' : isPressed ? '#1a1a1a' : bg,
+                  color: isWrong ? '#991b1b' : isPressed ? '#fff' : color,
+                  borderColor: isWrong ? '#fca5a5' : isExpected ? '#1a1a1a' : border,
+                  borderWidth: isExpected ? '2px' : '1px',
+                  boxShadow: isExpected ? '0 0 0 3px rgba(26,26,26,0.08)' : undefined,
+                }}
+                title={locked ? `${c} — locked` : `${c} — ${MORSE[c]}`}
+                aria-label={locked ? `${c} (locked)` : c}
+              >
+                <span className="display text-base md:text-lg font-bold leading-none">{c}</span>
+                <span className="mono text-[8px] md:text-[9px] mt-0.5 opacity-60 leading-none">
+                  {locked ? '·' : renderMorse(MORSE[c])}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ))}
+
+      {/* Spacebar — for word breaks. Highlighted when the next expected entry is a word gap. */}
+      <div className="flex justify-center mt-1.5">
+        <button
+          onClick={() => onKeyClick(' ')}
+          className={`relative w-64 md:w-80 h-9 md:h-10 rounded-lg border flex items-center justify-center transition-all duration-100 cursor-pointer hover:-translate-y-0.5 hover:shadow-md active:translate-y-0 active:shadow-sm ${
+            pressedKey === ' ' ? 'pulse-active' : ''
+          } ${lastWrongKey === ' ' ? 'shake-x' : ''}`}
+          style={{
+            background: lastWrongKey === ' ' ? '#fef2f2' : pressedKey === ' ' ? '#1a1a1a' : '#fff',
+            color: lastWrongKey === ' ' ? '#991b1b' : pressedKey === ' ' ? '#fff' : '#78716c',
+            borderColor: lastWrongKey === ' ' ? '#fca5a5' : hintWordBreak ? '#1a1a1a' : '#e7e5e4',
+            borderWidth: hintWordBreak ? '2px' : '1px',
+            boxShadow: hintWordBreak ? '0 0 0 3px rgba(26,26,26,0.08)' : undefined,
+          }}
+          title="space — word break"
+          aria-label="space (word break)"
+        >
+          <span className="text-[10px] uppercase tracking-[0.25em] font-medium">space</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Summary card shown between batches. Mirrors keybr's between-test screen — headline stats,
+// problem letters, recent-batch trend, and a primary "Next batch" action.
+function BatchSummary({ stats, history, onNext }) {
+  if (!stats) return null;
+  const {
+    totalLetters, totalMistakes, firstTryAcc, avgReactionMs,
+    achievedWpm, percentOfGoal, goalWpm, problems,
+  } = stats;
+
+  const accColor = firstTryAcc >= 0.9 ? '#16a34a' : firstTryAcc >= 0.75 ? '#ca8a04' : '#dc2626';
+  const speedColor = percentOfGoal != null && percentOfGoal >= 0.9 ? '#16a34a'
+    : percentOfGoal != null && percentOfGoal >= 0.7 ? '#ca8a04'
+    : '#dc2626';
+
+  return (
+    <div className="fade-in">
+      {/* Headline stats */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 my-6">
+        <div className="p-5 rounded-2xl bg-stone-50 border border-stone-200">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-1">Accuracy</div>
+          <div className="display text-4xl font-bold leading-tight" style={{ color: accColor }}>
+            {Math.round(firstTryAcc * 100)}%
+          </div>
+          <div className="text-xs text-stone-500 mt-1">
+            {totalLetters - totalMistakes > 0 ? `${totalMistakes} miskey${totalMistakes === 1 ? '' : 's'}` : 'no mistakes'}
+            {' '}· {totalLetters} letters
+          </div>
+        </div>
+
+        <div className="p-5 rounded-2xl bg-stone-50 border border-stone-200">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-1">Avg reaction</div>
+          <div className="display text-4xl font-bold leading-tight">
+            {avgReactionMs != null ? `${Math.round(avgReactionMs)}` : '—'}
+            {avgReactionMs != null && <span className="text-lg font-medium text-stone-500 ml-1">ms</span>}
+          </div>
+          <div className="text-xs text-stone-500 mt-1">first-pass — no retries</div>
+        </div>
+
+        <div className="p-5 rounded-2xl bg-stone-50 border border-stone-200 col-span-2 md:col-span-1">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-1">Achieved speed</div>
+          <div className="display text-4xl font-bold leading-tight" style={{ color: speedColor }}>
+            {achievedWpm != null ? achievedWpm.toFixed(1) : '—'}
+            {achievedWpm != null && <span className="text-lg font-medium text-stone-500 ml-1">wpm</span>}
+          </div>
+          <div className="text-xs text-stone-500 mt-1">
+            {percentOfGoal != null
+              ? `${Math.round(percentOfGoal * 100)}% of ${goalWpm} wpm goal`
+              : `goal ${goalWpm} wpm`}
+          </div>
+          {/* Speed bar */}
+          {percentOfGoal != null && (
+            <div className="mt-2 h-1 bg-stone-200 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-700"
+                style={{
+                  width: `${Math.min(100, percentOfGoal * 100)}%`,
+                  background: speedColor,
+                }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Problem letters */}
+      {problems.length > 0 && (
+        <div className="my-4 p-4 rounded-2xl bg-stone-50 border border-stone-200">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-3">Tripped on</div>
+          <div className="flex flex-wrap gap-2">
+            {problems.map(p => (
+              <div
+                key={p.char}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border bg-white"
+                style={{ borderColor: '#fca5a5' }}
+              >
+                <span className="display text-lg font-bold">{p.char}</span>
+                <span className="mono text-[10px] text-stone-500">{renderMorse(MORSE[p.char])}</span>
+                <span className="text-xs text-stone-600">
+                  {p.mistakes} miss{p.mistakes === 1 ? '' : 'es'} / {p.count}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recent batch trend */}
+      {history.length > 1 && (
+        <div className="my-4 flex items-end gap-1 h-12 px-1">
+          {history.map((h, i) => {
+            const ratio = h.achievedWpm != null && h.goalWpm > 0
+              ? Math.min(1, h.achievedWpm / h.goalWpm)
+              : 0;
+            return (
+              <div
+                key={i}
+                className="flex-1 rounded-t-sm transition-all"
+                style={{
+                  height: `${Math.max(6, ratio * 100)}%`,
+                  background: ratio >= 0.9 ? '#16a34a' : ratio >= 0.7 ? '#ca8a04' : '#dc2626',
+                  opacity: 0.3 + (i / Math.max(1, history.length - 1)) * 0.7,
+                }}
+                title={`${h.achievedWpm?.toFixed(1) ?? '—'} / ${h.goalWpm} wpm · ${Math.round(h.acc * 100)}%`}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {/* Action */}
+      <div className="flex flex-col items-center gap-2 mt-8">
+        <button
+          onClick={onNext}
+          className="px-8 py-3 rounded-full text-sm font-semibold uppercase tracking-[0.2em] bg-stone-900 text-white hover:bg-black transition shadow-lg"
+        >
+          Next batch →
+        </button>
+        <div className="text-[11px] text-stone-500">
+          or press <kbd className="px-1.5 py-0.5 mono text-[10px] bg-stone-100 border border-stone-300 rounded">space</kbd>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The streaming-tape display: a horizontal row of letter slots.
+// - Past entries (answered) on the left, dimming with distance
+// - Current cursor (next to type) is highlighted
+// - Upcoming/playing entries on the right, faded
+function Tape({ entries, cursor, playing, wrongFlash = 0 }) {
+  return (
+    <div className="flex items-center justify-center gap-2 md:gap-3 my-6 min-h-[120px] overflow-hidden">
+      {entries.map((e, i) => {
+        const isPast = i < cursor;
+        const isCurrent = i === cursor;
+        const isPlaying = i === playing;
+        const dist = Math.abs(i - cursor);
+        const opacity = Math.max(0.25, 1 - dist * 0.15);
+        const flashing = isCurrent && wrongFlash > 0;
+
+        // Word-break entries render as a thin vertical gap marker
+        if (e.kind === 'word') {
+          let bg, border, color, display;
+          if (isPast && e.answered) {
+            if (e.correct) {
+              bg = '#1a1a1a'; border = '#1a1a1a'; color = '#fff'; display = '␣';
+            } else {
+              bg = '#fef2f2'; border = '#fca5a5'; color = '#991b1b'; display = e.typed === ' ' ? '␣' : (e.typed || '·');
+            }
+          } else if (isCurrent) {
+            if (flashing) {
+              bg = '#fef2f2'; border = '#fca5a5'; color = '#991b1b'; display = '␣';
+            } else {
+              bg = '#fff'; border = '#1a1a1a'; color = '#a8a29e';
+              display = '␣';
+            }
+          } else {
+            bg = 'transparent'; border = 'transparent'; color = '#d6d3d1'; display = '·';
+          }
+          return (
+            <div
+              key={`${e.id}-${flashing ? wrongFlash : 0}`}
+              className={`relative flex-shrink-0 w-6 md:w-7 h-16 md:h-18 rounded-md border flex items-center justify-center transition-all duration-200 ${isPlaying ? 'pulse-active' : ''} ${flashing ? 'shake-x' : ''}`}
+              style={{ background: bg, color, borderColor: border, borderStyle: 'dashed', opacity }}
+              title="word break — press space"
+            >
+              <span className="text-base md:text-lg font-bold">{display}</span>
+            </div>
+          );
+        }
+
+        let bg = '#fff', color = '#1a1a1a', border = '#e7e5e4', extra = '';
+        let display = '·';
+
+        if (isPast && e.answered) {
+          if (e.correct) {
+            bg = '#1a1a1a'; color = '#fff'; border = '#1a1a1a';
+            display = e.char;
+          } else {
+            bg = '#fef2f2'; color = '#991b1b'; border = '#fca5a5';
+            display = e.typed === ' ' ? '␣' : e.typed;
+          }
+        } else if (isCurrent) {
+          if (flashing) {
+            bg = '#fef2f2'; color = '#991b1b'; border = '#fca5a5';
+            display = '?';
+            extra = 'shake-x';
+          } else {
+            color = '#a8a29e';
+            border = '#1a1a1a';
+            display = isPlaying ? '?' : (e.playedAt ? '?' : '·');
+            if (isPlaying) extra = 'pulse-active';
+          }
+        } else {
+          display = '·';
+          color = '#d6d3d1';
+          if (isPlaying) {
+            extra = 'pulse-active';
+            border = '#a8a29e';
+          }
+        }
+
+        return (
+          <div
+            key={`${e.id}-${flashing ? wrongFlash : 0}`}
+            className={`relative flex-shrink-0 w-12 h-16 md:w-14 md:h-18 rounded-xl border-2 flex items-center justify-center transition-all duration-200 ${extra}`}
+            style={{
+              background: bg,
+              color,
+              borderColor: border,
+              opacity,
+            }}
+          >
+            <span className="display text-2xl md:text-3xl font-bold">{display}</span>
+            {isPast && e.answered && !e.correct && (
+              <div className="absolute -bottom-5 text-[9px] mono text-stone-500 whitespace-nowrap">
+                <span className="text-stone-900 font-bold">{e.char}</span>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------- SENDER (key-based conveyor) ----------
+// Build a reverse lookup: morse pattern -> letter
+const MORSE_TO_LETTER = Object.fromEntries(Object.entries(MORSE).map(([l, c]) => [c, l]));
+
+// Conveyor layout constants (in pixels per Morse "unit")
+const PX_PER_UNIT = 28;
+// Where the strike line sits, measured in units from the left edge of the track
+// Strike line is the user's "now" marker. With dual lanes (target vs yours), we want enough
+// room on the LEFT of the line to see recent press history, not just upcoming shapes on the
+// right. Out of 26 unit-widths total, 10 to the left / 16 to the right hits that balance —
+// the longest letter patterns (J, P, Q, Y at ~13 units) still fit in the right-side queue.
+const STRIKE_OFFSET_UNITS = 10;
+// Total width of the visible track, in units
+const TRACK_WIDTH_UNITS = 26;
+
+function Sender({ unlocked, stats, recordSample, wpm, hideTarget, keyMode }) {
+  // Letters in flight on the conveyor. The most-recently-added letter is the "current" one.
+  // Older letters stay in the array (scrolling off-screen leftward) until the conveyor's clip
+  // region hides them; we prune them once they've passed far enough left to never be visible.
+  // Each letter:
+  //   id          unique key for React
+  //   target      char ('A'-'Z')
+  //   pattern     morse string ('.--')
+  //   worldStart  world-units coordinate at which shape 0's leading edge sits at the strike line
+  //   tStart      legacy field — null in the continuous-flow model. The conveyor's "yours" lane
+  //               falls back to it when a press lacks the newer downWorld/upWorld stamps.
+  //   presses     [{ downAt, upAt, downWorld, upWorld }] — world stamps added at capture time
+  //   feedback    set after evaluation
+  //
+  // worldNow is a single continuously-advancing coordinate. It grows with real time during
+  // both 'running' and 'transit' — there is no freeze. Shape s of letter L sits at screen
+  // x = (STRIKE_OFFSET_UNITS + (L.worldStart + s.start - worldNow)) * PX_PER_UNIT — i.e. it's
+  // at the strike line when L.worldStart + s.start == worldNow.
+  const [letters, setLetters] = useState([]);
+  const [worldNow, setWorldNow] = useState(0);
+  const [pressed, setPressed] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  const lettersRef = useRef([]);
+  const worldNowRef = useRef(0);
+  const pressDownAtRef = useRef(0);
+  // World-units position at the moment of the current press's downAt — used to render the
+  // live (in-flight) press in the "yours" lane without depending on tStart, which no longer
+  // exists in the continuous-flow model.
+  const pressDownWorldRef = useRef(0);
+  // worldEpoch: the world-units value at which performance.now() === realEpoch. Together they
+  // let us compute worldNow whenever the loop ticks: worldNow = worldEpoch + (now - realEpoch)/unitMs.
+  // We re-anchor these whenever the conveyor pauses or resumes so worldNow doesn't jump.
+  const realEpochRef = useRef(0);
+  const worldEpochRef = useRef(0);
+  const animFrameRef = useRef(0);
+  // Phase of the latest letter on the conveyor:
+  //   'idle'     — initial (very briefly, before the first letter is queued)
+  //   'running'  — the conveyor is flowing, current letter is at or approaching the strike line.
+  //                The user keys whenever shapes are crossing; presses outside the ideal windows
+  //                grade as misses. Letters auto-evaluate once their trailing edge clears.
+  //   'transit'  — keying finished/evaluated; worldNow keeps advancing as the old letter scrolls
+  //                off-screen and the new one slides in. Transitions to 'running' automatically
+  //                once the new letter's shapes start crossing the strike line.
+  // Note: there is no separate 'ready' phase — the conveyor never freezes waiting for input.
+  // If you don't press in time, the shapes pass you by and the letter scores as a miss.
+  const phaseRef = useRef('idle');
+  const unlockedRef = useRef(unlocked);
+  const statsRef = useRef(stats);
+
+  lettersRef.current = letters;
+  worldNowRef.current = worldNow;
+  unlockedRef.current = unlocked;
+  statsRef.current = stats;
+
+  const unitMs = 1200 / wpm;
+  // Distance (in world units) the new letter slides in from the right before parking at the
+  // strike line. Half the right-of-strike area — enough preview to feel intentional, not so
+  // much that it stalls the practice loop.
+  const SLIDE_IN_UNITS = Math.floor((TRACK_WIDTH_UNITS - STRIKE_OFFSET_UNITS) / 2);
+
+  // Build the geometry of a pattern: array of element shapes with start/end in units
+  const buildShapes = (pat) => {
+    const shapes = [];
+    let cursor = 0;
+    for (let i = 0; i < pat.length; i++) {
+      const w = pat[i] === '.' ? 1 : 3;
+      shapes.push({ type: pat[i], start: cursor, end: cursor + w });
+      cursor += w;
+      if (i < pat.length - 1) cursor += 1; // 1u intra-letter gap
+    }
+    return shapes;
+  };
+
+  // Total length of the pattern in units (without trailing gap)
+  const patternLengthUnits = (pat) => {
+    if (!pat) return 0;
+    let total = 0;
+    for (let i = 0; i < pat.length; i++) {
+      total += pat[i] === '.' ? 1 : 3;
+      if (i < pat.length - 1) total += 1;
+    }
+    return total;
+  };
+
+  // Helpers for reading the current letter
+  const currentLetter = () => {
+    const ls = lettersRef.current;
+    return ls.length > 0 ? ls[ls.length - 1] : null;
+  };
+
+  // Re-anchor the world clock so that worldNowRef.current corresponds to performance.now().
+  // Call this whenever we transition into a phase where worldNow advances with real time.
+  const anchorWorldClock = (atWorld) => {
+    realEpochRef.current = performance.now();
+    worldEpochRef.current = atWorld;
+    worldNowRef.current = atWorld;
+    setWorldNow(atWorld);
+  };
+
+  // Add the next letter to the conveyor. We insert it ahead of the current worldNow by
+  // SLIDE_IN_UNITS so that as worldNow continues to advance, the new shape slides in from
+  // the right edge and reaches the strike line exactly when worldNow reaches its worldStart.
+  // The conveyor doesn't park — once it's there, the shapes immediately start crossing.
+  const queueNextLetter = useCallback(() => {
+    const prev = currentLetter();
+    const t = pickNextLetter(unlockedRef.current, statsRef.current, prev?.target);
+    const pat = MORSE[t];
+    const newLetter = {
+      id: (prev?.id || 0) + 1,
+      target: t,
+      pattern: pat,
+      worldStart: worldNowRef.current + SLIDE_IN_UNITS,
+      tStart: null,
+      presses: [],
+      feedback: null,
+    };
+    lettersRef.current = [...lettersRef.current, newLetter];
+    setLetters(lettersRef.current);
+  }, [SLIDE_IN_UNITS]);
+
+  // Initial setup: place the first letter offset to the right so it slides in like any other
+  // letter. The user gets a preview of SLIDE_IN_UNITS before its first shape reaches the strike
+  // line, giving them time to ready up — but the conveyor is always flowing from the start, so
+  // letters never park. If the user doesn't press in time, the shapes pass by.
+  useEffect(() => {
+    if (lettersRef.current.length > 0) return;
+    anchorWorldClock(0);
+    const t = pickNextLetter(unlockedRef.current, statsRef.current, null);
+    const pat = MORSE[t];
+    const firstLetter = {
+      id: 1,
+      target: t,
+      pattern: pat,
+      worldStart: SLIDE_IN_UNITS, // slide in from the right
+      tStart: null, // unused now — kept on the shape for back-compat with debug/feedback paths
+      presses: [],
+      feedback: null,
+    };
+    lettersRef.current = [firstLetter];
+    setLetters(lettersRef.current);
+    // Start in transit so the animation loop advances the world clock immediately. It will
+    // flip to 'running' once worldNow reaches the new letter's worldStart (i.e. when shape 0
+    // is at the strike line).
+    phaseRef.current = 'transit';
+    return () => {
+      cancelAnimationFrame(animFrameRef.current);
+      audio.stopLiveTone();
+    };
+    // eslint-disable-next-line
+  }, []);
+
+  // Animation loop. Advances worldNow during 'running' and 'transit' — the world clock is
+  // always flowing. When 'transit' brings worldNow up to the latest letter's worldStart, we
+  // flip to 'running' (no freeze). When 'running' advances past the finish point, evaluate.
+  useEffect(() => {
+    let raf;
+    const tick = () => {
+      const phase = phaseRef.current;
+      if (phase === 'running' || phase === 'transit') {
+        const elapsedReal = performance.now() - realEpochRef.current;
+        const w = worldEpochRef.current + elapsedReal / unitMs;
+        worldNowRef.current = w;
+        setWorldNow(w);
+
+        const cur = currentLetter();
+        if (cur) {
+          if (phase === 'transit' && w >= cur.worldStart) {
+            // New letter's shape 0 has reached the strike line — switch to running so its
+            // evaluate-when-trailing-edge-clears logic kicks in. No freeze, no ready phase.
+            phaseRef.current = 'running';
+          } else if (phase === 'running') {
+            const totalUnits = patternLengthUnits(cur.pattern);
+            // Finish condition: trailing edge of last shape has crossed strike by 2 units
+            const finishWorld = cur.worldStart + totalUnits + 2;
+            if (w >= finishWorld) {
+              // Close any open press — stamp world coords so the Conveyor renders it the
+              // same way as a normal handlePressUp-captured press.
+              if (pressDownAtRef.current) {
+                const upAt = performance.now();
+                const upWorld = worldEpochRef.current + (upAt - realEpochRef.current) / unitMs;
+                cur.presses = [...cur.presses, {
+                  downAt: pressDownAtRef.current,
+                  upAt,
+                  downWorld: pressDownWorldRef.current,
+                  upWorld,
+                }];
+                pressDownAtRef.current = 0;
+                pressDownWorldRef.current = 0;
+                setPressed(false);
+                audio.stopLiveTone();
+              }
+              // Don't pin worldNow — keep it flowing so the conveyor never stops. Evaluate
+              // attaches grading colours to the just-finished letter (visible as it scrolls
+              // off) and queues the next letter on the right edge.
+              evaluate();
+              phaseRef.current = 'transit';
+            }
+          }
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    animFrameRef.current = raf;
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line
+  }, [unitMs]);
+
+  const evaluate = () => {
+    const cur = currentLetter();
+    if (!cur) return;
+    const pat = cur.pattern;
+    const presses = cur.presses;
+    const shapes = buildShapes(pat);
+
+    // Convert each shape into an ideal press window in performance-time. With the continuous-
+    // flow model, shape s is at the strike line when worldNow == cur.worldStart + s.start. We
+    // translate world positions back to real time using the active world-clock anchor:
+    //   t(W) = realEpochRef + (W - worldEpochRef) * unitMs
+    const worldToReal = (W) => realEpochRef.current + (W - worldEpochRef.current) * unitMs;
+    const idealWindows = shapes.map(s => {
+      const t_in = worldToReal(cur.worldStart + s.start);
+      const t_out = worldToReal(cur.worldStart + s.end);
+      return { type: s.type, t_in, t_out, duration: t_out - t_in };
+    });
+
+    const decodedPattern = presses.map(p => {
+      const d = p.upAt - p.downAt;
+      return d < 2 * unitMs ? '.' : '-';
+    }).join('');
+    const decoded = MORSE_TO_LETTER[decodedPattern] || '?';
+    const correctLetter = decoded === cur.target;
+
+    let perShape = [];
+    let totalIoU = 0;
+    for (let i = 0; i < idealWindows.length; i++) {
+      const w = idealWindows[i];
+      const p = presses[i];
+      if (!p) {
+        perShape.push({ ...w, press: null, iou: 0, missed: true });
+        continue;
+      }
+      const overlap = Math.max(0, Math.min(w.t_out, p.upAt) - Math.max(w.t_in, p.downAt));
+      const union = Math.max(w.t_out, p.upAt) - Math.min(w.t_in, p.downAt);
+      const iou = union > 0 ? overlap / union : 0;
+      const onsetOffsetMs = p.downAt - w.t_in;
+      const offsetOffsetMs = p.upAt - w.t_out;
+      perShape.push({ ...w, press: p, iou, onsetOffsetMs, offsetOffsetMs });
+      totalIoU += iou;
+    }
+    const avgIoU = idealWindows.length > 0 ? totalIoU / idealWindows.length : 0;
+    const extraPresses = Math.max(0, presses.length - idealWindows.length);
+    const extraPenalty = extraPresses * 0.15;
+    const timingScore = Math.max(0, Math.min(1, avgIoU - extraPenalty));
+
+    const sampleCorrect = correctLetter && timingScore >= 0.4;
+    const sampleMs = (1 - timingScore) * 4000;
+    recordSample(cur.target, sampleCorrect, sampleMs);
+
+    const fb = {
+      target: cur.target,
+      decoded,
+      decodedPattern,
+      correct: correctLetter,
+      timingScore,
+      perShape,
+      presses,
+      idealWindows,
+    };
+    // Mutate the letter in-place with feedback + sync state
+    cur.feedback = fb;
+    setHistory(h => [...h.slice(-9), { target: cur.target, correct: correctLetter, timingScore }]);
+
+    // Prune letters that have fully scrolled off the left edge to keep the array small.
+    lettersRef.current = lettersRef.current.filter(L => {
+      const total = patternLengthUnits(L.pattern);
+      // Right edge of last shape is at worldNow >= L.worldStart + total. If that edge has
+      // scrolled past the left edge of the visible track, we can drop it.
+      const lastEdgeWorld = L.worldStart + total;
+      return worldNowRef.current - lastEdgeWorld < STRIKE_OFFSET_UNITS;
+    });
+    // Append the next letter ahead of worldNow by SLIDE_IN_UNITS, and re-anchor the world
+    // clock so the loop keeps ticking smoothly (anchorWorldClock pins worldEpoch to the
+    // current worldNow so there's no jump). The animation loop, on its next frame, will
+    // continue advancing worldNow, scrolling the just-finished letter leftward and sliding
+    // the new one in from the right.
+    queueNextLetter();
+    anchorWorldClock(worldNowRef.current);
+    setLetters(lettersRef.current);
+  };
+
+  // Press handlers
+  // Press positions are stamped in world coordinates at capture time so the Conveyor can render
+  // them without referring to tStart (which no longer exists). World position is computed from
+  // the active world-clock anchor: worldEpoch + (t - realEpoch) / unitMs.
+  const handlePressDown = useCallback(() => {
+    const phase = phaseRef.current;
+    // Accept presses any time we have a letter on the conveyor — during 'running' (shapes
+    // crossing the strike line) and during 'transit' (new letter sliding in from the right).
+    // A press during transit attaches to the incoming letter and grades as an early press
+    // against its first shape's ideal window; that's the truthful outcome, not a reason to
+    // swallow the input. Only 'idle' (the single frame before the first letter is queued) is
+    // rejected, since there's nothing to attach to.
+    if (phase === 'idle') return;
+    if (pressDownAtRef.current) return;
+    const downAt = performance.now();
+    pressDownAtRef.current = downAt;
+    pressDownWorldRef.current = worldEpochRef.current + (downAt - realEpochRef.current) / unitMs;
+    setPressed(true);
+    audio.startLiveTone();
+  }, [unitMs]);
+
+  const handlePressUp = useCallback(() => {
+    if (!pressDownAtRef.current) return;
+    const upAt = performance.now();
+    const cur = currentLetter();
+    if (cur) {
+      const downAt = pressDownAtRef.current;
+      const downWorld = pressDownWorldRef.current;
+      const upWorld = worldEpochRef.current + (upAt - realEpochRef.current) / unitMs;
+      cur.presses = [...cur.presses, { downAt, upAt, downWorld, upWorld }];
+      lettersRef.current = [...lettersRef.current];
+      setLetters(lettersRef.current);
+    }
+    pressDownAtRef.current = 0;
+    pressDownWorldRef.current = 0;
+    setPressed(false);
+    audio.stopLiveTone();
+  }, [unitMs]);
+
+  // Paddle-mode tap handler. Each tap synthesises one perfectly-timed shape: dit (1 unit) or
+  // dah (3 units). The shape gets placed at the strike line at the moment of the tap, with
+  // automatic inter-element queueing so rapid taps produce a clean .... or -.-.- pattern rather
+  // than overlapping presses. Mirrors how a single-lever paddle + electronic keyer behaves:
+  // the operator chooses which shape and when, the keyer handles all timing.
+  const paddleNextWorldRef = useRef(0);
+  const handlePaddleTap = useCallback((kind) => {
+    const phase = phaseRef.current;
+    if (phase === 'idle') return;
+    const cur = currentLetter();
+    if (!cur) return;
+    const shapeUnits = (kind === '.') ? 1 : 3;
+    const now = performance.now();
+    const worldNowLocal = worldEpochRef.current + (now - realEpochRef.current) / unitMs;
+    // Place the new shape after any in-flight queued shapes (1 unit inter-element gap), but
+    // never before the strike line — taps that arrive while idle queue snap forward to "now".
+    const startWorld = Math.max(worldNowLocal, paddleNextWorldRef.current);
+    const endWorld = startWorld + shapeUnits;
+    // Convert world positions to performance-time for the press record, and to audio-clock
+    // seconds for tone scheduling.
+    const startReal = realEpochRef.current + (startWorld - worldEpochRef.current) * unitMs;
+    const endReal   = realEpochRef.current + (endWorld   - worldEpochRef.current) * unitMs;
+    cur.presses = [...cur.presses, {
+      downAt: startReal,
+      upAt: endReal,
+      downWorld: startWorld,
+      upWorld: endWorld,
+    }];
+    lettersRef.current = [...lettersRef.current];
+    setLetters(lettersRef.current);
+    // Schedule the tone at the appropriate audio-clock time. The performance.now() → audio.ctx
+    // currentTime offset shifts over time but is stable on the scale of one tap, so a single
+    // sample is fine. Convert the start-time delay (ms in perf-time) to seconds and add.
+    audio.ensure();
+    const delaySec = Math.max(0, (startReal - now) / 1000);
+    audio.tone(audio.audioNow() + delaySec, shapeUnits * unitMs / 1000);
+    // Reserve the next-available slot one inter-element gap after this shape ends. Subsequent
+    // taps will stack from here rather than from worldNow.
+    paddleNextWorldRef.current = endWorld + 1;
+    // Visual: brief "pressed" flash for the on-screen button. Auto-cleared after the shape's
+    // visible duration so the button releases when the tone does.
+    setPressed(true);
+    setTimeout(() => setPressed(false), shapeUnits * unitMs);
+  }, [unitMs]);
+
+  // Reset transient input state when key style changes — avoids dangling presses from one mode
+  // bleeding into the other (e.g. holding space, switching to paddle, never seeing the release).
+  useEffect(() => {
+    if (pressDownAtRef.current) {
+      audio.stopLiveTone();
+      pressDownAtRef.current = 0;
+      pressDownWorldRef.current = 0;
+      setPressed(false);
+    }
+    paddleNextWorldRef.current = 0;
+  }, [keyMode]);
+
+  // Keyboard bindings — split by key style:
+  //   Straight mode → spacebar press-and-hold.
+  //   Paddle mode   → comma (dit) and period (dah) as discrete taps.
+  // The bindings reattach when keyMode flips so we don't ship space-down events to a paddle
+  // handler or vice versa.
+  useEffect(() => {
+    if (keyMode === 'straight') {
+      const onDown = (e) => {
+        if (e.code !== 'Space' && e.key !== ' ') return;
+        if (e.repeat) return;
+        e.preventDefault();
+        handlePressDown();
+      };
+      const onUp = (e) => {
+        if (e.code !== 'Space' && e.key !== ' ') return;
+        e.preventDefault();
+        handlePressUp();
+      };
+      const onBlur = () => { if (pressDownAtRef.current) handlePressUp(); };
+      window.addEventListener('keydown', onDown);
+      window.addEventListener('keyup', onUp);
+      window.addEventListener('blur', onBlur);
+      return () => {
+        window.removeEventListener('keydown', onDown);
+        window.removeEventListener('keyup', onUp);
+        window.removeEventListener('blur', onBlur);
+      };
+    } else {
+      const onDown = (e) => {
+        // Match by `.key` rather than `.code` so this works the same on different layouts
+        // where comma/period live on different physical keys.
+        if (e.key === ',') {
+          if (e.repeat) return;
+          e.preventDefault();
+          handlePaddleTap('.');
+        } else if (e.key === '.') {
+          if (e.repeat) return;
+          e.preventDefault();
+          handlePaddleTap('-');
+        }
+      };
+      window.addEventListener('keydown', onDown);
+      return () => window.removeEventListener('keydown', onDown);
+    }
+  }, [keyMode, handlePressDown, handlePressUp, handlePaddleTap]);
+
+  // Display-only convenience for children
+  const cur = currentLetter();
+  const target = cur?.target || null;
+  const targetPattern = cur?.pattern || '';
+  const feedback = cur?.feedback || null;
+
+  return (
+    <section className="py-10 mb-4 relative">
+      <div className="text-center mb-2">
+        <div className="text-[11px] uppercase tracking-[0.25em] text-stone-500 font-medium">
+          {phaseRef.current === 'transit'
+            ? 'Next letter incoming…'
+            : 'Send the letter — match the rhythm as it crosses the line'}
+        </div>
+      </div>
+
+      {/* Target letter */}
+      <div className="flex flex-col items-center my-6">
+        <div className="display text-7xl font-bold mb-1" style={{
+          color: feedback ? (feedback.correct ? '#16a34a' : '#dc2626') : '#1a1a1a'
+        }}>
+          {target || '·'}
+        </div>
+        <div className="mono text-sm text-stone-500">
+          {target ? renderMorse(MORSE[target]) : ''}
+        </div>
+      </div>
+
+      {/* Conveyor track */}
+      <Conveyor
+        letters={letters}
+        worldNow={worldNow}
+        pressed={pressed}
+        currentPressDownWorld={pressDownWorldRef.current}
+        unitMs={unitMs}
+        hideTarget={hideTarget}
+        currentLetterId={cur?.id || 0}
+      />
+
+      {/* Key UI — straight key (one press-and-hold button) or paddle (dit + dah taps). Both
+          are always enabled; pressing outside the ideal window grades as off-timing in the
+          per-shape feedback rather than being swallowed. */}
+      <div className="flex flex-col items-center gap-3 mt-6">
+        {keyMode === 'straight' ? (
+          <>
+            <button
+              onMouseDown={handlePressDown}
+              onMouseUp={handlePressUp}
+              onMouseLeave={() => { if (pressed) handlePressUp(); }}
+              onTouchStart={(e) => { e.preventDefault(); handlePressDown(); }}
+              onTouchEnd={(e) => { e.preventDefault(); handlePressUp(); }}
+              className="select-none w-48 h-16 rounded-2xl font-bold text-sm uppercase tracking-[0.3em] transition-all duration-100 shadow-lg hover:shadow-xl"
+              style={{
+                background: pressed ? '#1a1a1a' : '#fbbf24',
+                color: pressed ? '#fbbf24' : '#1a1a1a',
+                boxShadow: pressed
+                  ? 'inset 0 4px 12px rgba(0,0,0,0.4)'
+                  : '0 5px 0 #92400e, 0 7px 14px rgba(0,0,0,0.15)',
+                transform: pressed ? 'translateY(3px)' : 'translateY(0)',
+              }}
+            >
+              {pressed ? '— sending —' : 'press & hold'}
+            </button>
+            <div className="text-xs text-stone-500">
+              or hold <kbd className="px-2 py-0.5 mono text-[11px] bg-stone-100 border border-stone-300 rounded">space</kbd>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-3">
+              <button
+                onMouseDown={(e) => { e.preventDefault(); handlePaddleTap('.'); }}
+                onTouchStart={(e) => { e.preventDefault(); handlePaddleTap('.'); }}
+                className="select-none w-24 h-16 rounded-2xl font-bold text-sm uppercase tracking-[0.2em] transition-all duration-75 shadow-lg active:translate-y-1"
+                style={{
+                  background: '#fbbf24',
+                  color: '#1a1a1a',
+                  boxShadow: '0 5px 0 #92400e, 0 7px 14px rgba(0,0,0,0.15)',
+                }}
+              >
+                dit ·
+              </button>
+              <button
+                onMouseDown={(e) => { e.preventDefault(); handlePaddleTap('-'); }}
+                onTouchStart={(e) => { e.preventDefault(); handlePaddleTap('-'); }}
+                className="select-none w-32 h-16 rounded-2xl font-bold text-sm uppercase tracking-[0.2em] transition-all duration-75 shadow-lg active:translate-y-1"
+                style={{
+                  background: '#fbbf24',
+                  color: '#1a1a1a',
+                  boxShadow: '0 5px 0 #92400e, 0 7px 14px rgba(0,0,0,0.15)',
+                }}
+              >
+                dah —
+              </button>
+            </div>
+            <div className="text-xs text-stone-500">
+              or tap <kbd className="px-2 py-0.5 mono text-[11px] bg-stone-100 border border-stone-300 rounded">,</kbd> for dit · <kbd className="px-2 py-0.5 mono text-[11px] bg-stone-100 border border-stone-300 rounded">.</kbd> for dah
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Feedback summary */}
+      {feedback && (
+        <div className="mt-6 max-w-xl mx-auto p-4 rounded-2xl fade-in" style={{
+          background: feedback.correct ? '#f0fdf4' : '#fef2f2',
+          borderColor: feedback.correct ? '#86efac' : '#fca5a5',
+          borderWidth: 1, borderStyle: 'solid'
+        }}>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs uppercase tracking-wider text-stone-500 mb-1">
+                {feedback.correct ? 'Correct' : 'Decoded as'}
+              </div>
+              <div className="display text-2xl font-bold">
+                {feedback.decoded}
+                <span className="mono text-base text-stone-500 font-medium ml-2">{renderMorse(feedback.decodedPattern || '')}</span>
+              </div>
+              {!feedback.correct && (
+                <div className="text-xs text-stone-600 mt-1">
+                  target was <span className="display font-bold">{feedback.target}</span> <span className="mono text-stone-500">{renderMorse(MORSE[feedback.target])}</span>
+                </div>
+              )}
+            </div>
+            <div className="text-right">
+              <div className="text-xs uppercase tracking-wider text-stone-500 mb-1">Timing</div>
+              <div className="display text-2xl font-bold" style={{
+                color: feedback.timingScore >= 0.7 ? '#16a34a' :
+                       feedback.timingScore >= 0.4 ? '#ca8a04' : '#dc2626'
+              }}>
+                {Math.round(feedback.timingScore * 100)}%
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* History dots */}
+      <div className="flex items-center justify-center gap-1.5 mt-6 h-7">
+        {history.slice(-10).map((p, i) => (
+          <div
+            key={i}
+            className="w-7 h-7 rounded-md flex items-center justify-center mono text-[11px] font-bold"
+            style={{
+              background: p.correct ? '#1a1a1a' : '#fef2f2',
+              color: p.correct ? '#fff' : '#991b1b',
+              border: p.correct ? 'none' : '1px solid #fca5a5',
+              opacity: 0.4 + 0.6 * (p.timingScore || 0),
+            }}
+            title={`${p.target} · ${Math.round((p.timingScore || 0) * 100)}% timing`}
+          >
+            {p.target}
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center justify-center gap-3 mt-4">
+        <div className="text-xs text-stone-500 mono">
+          {wpm} WPM · 1 unit = {Math.round(unitMs)}ms
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// The scrolling conveyor view.
+// Coordinate model: a single world-units axis that flows leftward as `worldNow` increases.
+// Each letter has a `worldStart` such that its shape 0 leading edge is at the strike line
+// when `worldNow == worldStart`. Shape s of letter L sits at:
+//     screen x = (STRIKE_OFFSET_UNITS + (L.worldStart + s.start) - worldNow) * PX_PER_UNIT
+// Presses are stamped at capture time with their world positions (downWorld / upWorld), so
+// they render at the same world coordinates as their target shapes. A perfectly-timed press
+// for shape s lands at downWorld == L.worldStart + s.start.
+function Conveyor({ letters, worldNow, pressed, currentPressDownWorld, unitMs, hideTarget, currentLetterId }) {
+  const trackWidthPx = TRACK_WIDTH_UNITS * PX_PER_UNIT;
+  const strikeX = STRIKE_OFFSET_UNITS * PX_PER_UNIT;
+
+  const buildShapes = (pat) => {
+    const shapes = [];
+    let cursor = 0;
+    for (let i = 0; i < pat.length; i++) {
+      const w = pat[i] === '.' ? 1 : 3;
+      shapes.push({ type: pat[i], start: cursor, end: cursor + w, idx: i });
+      cursor += w;
+      if (i < pat.length - 1) cursor += 1;
+    }
+    return shapes;
+  };
+
+  // World-units → screen-x. Anything outside [0, trackWidthPx] gets clipped by the parent's
+  // overflow-hidden so we don't need to filter manually, but we do skip rendering letters
+  // whose shapes are all clearly off-screen to save DOM nodes.
+  const worldToX = (worldPos) => (STRIKE_OFFSET_UNITS + worldPos - worldNow) * PX_PER_UNIT;
+
+  // Decide per-shape grade from a letter's feedback (post-evaluation only).
+  const gradeFor = (letter, shapeIdx) => {
+    if (!letter.feedback || !letter.feedback.perShape) return null;
+    return letter.feedback.perShape[shapeIdx];
+  };
+
+  return (
+    <div className="relative mx-auto my-4 select-none" style={{
+      width: `${trackWidthPx}px`,
+      maxWidth: '100%',
+    }}>
+      {/* Track background — taller now to fit two lanes side-by-side */}
+      <div className="relative h-36 rounded-2xl overflow-hidden" style={{
+        background: 'linear-gradient(180deg, #1c1917 0%, #0c0a09 100%)',
+        boxShadow: 'inset 0 4px 12px rgba(0,0,0,0.5), inset 0 -2px 6px rgba(0,0,0,0.6)',
+      }}>
+        {/* Lane stripes for ambience */}
+        <div className="absolute inset-0 opacity-10" style={{
+          backgroundImage: 'repeating-linear-gradient(90deg, transparent 0, transparent 27px, #fbbf24 27px, #fbbf24 28px)',
+        }} />
+
+        {/* Horizontal divider between the two lanes */}
+        <div className="absolute inset-x-0 top-1/2 h-px" style={{
+          background: 'rgba(255,255,255,0.08)',
+        }} />
+
+        {/* Lane labels — small uppercase tags on the far left, vertically centred in each lane.
+            'Hidden' tag shows only when the current (latest) letter has hideTarget on and no feedback yet. */}
+        {(() => {
+          const cur = letters.length > 0 ? letters[letters.length - 1] : null;
+          const isHiddenNow = hideTarget && cur && !cur.feedback;
+          return (
+            <>
+              <div className="absolute left-2 top-2 mono text-[8px] tracking-[0.3em] uppercase font-bold pointer-events-none"
+                   style={{ color: isHiddenNow ? 'rgba(251,191,36,0.25)' : 'rgba(251,191,36,0.55)' }}>
+                target{isHiddenNow ? ' · hidden' : ''}
+              </div>
+              <div className="absolute left-2 mono text-[8px] tracking-[0.3em] uppercase font-bold pointer-events-none"
+                   style={{ color: 'rgba(96,165,250,0.55)', top: 'calc(50% + 6px)' }}>
+                yours
+              </div>
+            </>
+          );
+        })()}
+
+        {/* TARGET lane — top half. Renders shapes for every letter in the array, positioned in
+            world coordinates. Old letters that are scrolling out remain visible; the new letter
+            slides in from the right edge. The current letter's shapes are hidden during keying
+            if `hideTarget` is on AND the letter has no feedback yet. */}
+        <div className="absolute inset-x-0 top-0 h-1/2 flex items-center">
+          <div className="relative w-full h-10">
+            {letters.flatMap(L => {
+              const isCurrent = L.id === currentLetterId;
+              // Hide the active letter's target shapes when hideTarget is on and not yet evaluated.
+              if (isCurrent && hideTarget && !L.feedback) return [];
+              const shapes = buildShapes(L.pattern);
+              return shapes.map((s, i) => {
+                const x = worldToX(L.worldStart + s.start);
+                // Skip shapes far off-screen on either side
+                if (x < -200 || x > trackWidthPx + 200) return null;
+                const width = (s.end - s.start) * PX_PER_UNIT;
+                const grade = gradeFor(L, i);
+                let bg = '#fbbf24';
+                if (grade) {
+                  const iou = grade.iou;
+                  bg = iou >= 0.6 ? '#22c55e' : iou >= 0.3 ? '#eab308' : '#ef4444';
+                }
+                return (
+                  <div
+                    key={`${L.id}-s${i}`}
+                    className="absolute top-1/2 -translate-y-1/2 rounded-full transition-colors"
+                    style={{
+                      left: `${x}px`,
+                      width: `${width}px`,
+                      height: '28px',
+                      minWidth: '20px',
+                      background: bg,
+                      boxShadow: `0 0 12px ${bg}80`,
+                    }}
+                  />
+                );
+              }).filter(Boolean);
+            })}
+          </div>
+        </div>
+
+        {/* YOURS lane — bottom half. Press intervals from every letter in the array, positioned
+            in world coordinates so they align with their target shapes when timing was correct. */}
+        <div className="absolute inset-x-0 bottom-0 h-1/2 flex items-center">
+          <div className="relative w-full h-10">
+            {letters.flatMap(L => {
+              return L.presses.map((p, i) => {
+                // Press positions were stamped in world coords at capture time. Fall back to
+                // tStart-relative math only if downWorld is missing (shouldn't happen post-migration).
+                const startWorld = (p.downWorld != null) ? p.downWorld
+                  : (L.tStart != null ? L.worldStart + (p.downAt - L.tStart) / unitMs : null);
+                const endWorld = (p.upWorld != null) ? p.upWorld
+                  : (L.tStart != null ? L.worldStart + (p.upAt - L.tStart) / unitMs : null);
+                if (startWorld == null || endWorld == null) return null;
+                const x = worldToX(startWorld);
+                if (x < -200 || x > trackWidthPx + 200) return null;
+                const width = (endWorld - startWorld) * PX_PER_UNIT;
+                return (
+                  <div
+                    key={`${L.id}-p${i}`}
+                    className="absolute top-1/2 -translate-y-1/2 rounded-full"
+                    style={{
+                      left: `${x}px`,
+                      width: `${Math.max(4, width)}px`,
+                      height: '28px',
+                      background: '#60a5fa',
+                      opacity: 0.9,
+                      boxShadow: '0 0 12px #60a5fa80',
+                    }}
+                  />
+                );
+              }).filter(Boolean);
+            })}
+            {/* Currently-held press for the active letter — left edge anchored at the world
+                position where the press started; right edge at worldNow (the strike line). */}
+            {(() => {
+              if (!currentPressDownWorld) return null;
+              const startX = worldToX(currentPressDownWorld);
+              const w = Math.max(4, (worldNow - currentPressDownWorld) * PX_PER_UNIT);
+              return (
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 rounded-full"
+                  style={{
+                    left: `${startX}px`,
+                    width: `${w}px`,
+                    height: '28px',
+                    background: '#60a5fa',
+                    opacity: 0.95,
+                    boxShadow: '0 0 16px #60a5fa, 0 0 4px #fff inset',
+                  }}
+                />
+              );
+            })()}
+          </div>
+        </div>
+
+        {/* Strike line — full height across both lanes */}
+        <div className="absolute top-0 bottom-0 w-0.5 z-10" style={{
+          left: `${strikeX}px`,
+          background: pressed ? '#fbbf24' : '#fff',
+          boxShadow: pressed ? '0 0 16px #fbbf24, 0 0 32px #fbbf2480' : '0 0 8px #ffffff80',
+          transition: 'background 60ms, box-shadow 60ms',
+        }} />
+        <div className="absolute z-10" style={{
+          left: `${strikeX - 6}px`,
+          top: '-2px',
+          width: 0, height: 0,
+          borderLeft: '6px solid transparent',
+          borderRight: '6px solid transparent',
+          borderTop: `8px solid ${pressed ? '#fbbf24' : '#fff'}`,
+        }} />
+
+        {/* "NOW" label — anchored next to the strike line */}
+        <div className="absolute z-10 mono text-[9px] tracking-[0.3em] uppercase font-bold" style={{
+          left: `${strikeX + 6}px`,
+          top: '4px',
+          color: pressed ? '#fbbf24' : '#a8a29e',
+        }}>
+          now
+        </div>
+      </div>
+
+      {/* Legend below the track */}
+      <div className="flex items-center justify-between mt-2 px-1 text-[10px] uppercase tracking-wider text-stone-500">
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-4 h-2 rounded-full" style={{ background: '#fbbf24' }} />
+            target
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-4 h-2 rounded-full" style={{ background: '#60a5fa' }} />
+            yours
+          </span>
+        </div>
+        <div className="mono text-[10px]">{Math.round(unitMs)}ms / unit</div>
+      </div>
+    </div>
+  );
+}
+
+function KeyboardPanel({ unlocked, stats, mode }) {
+  const letters = INTRO_ORDER;
+
+  const getColor = (c) => {
+    if (!unlocked.includes(c)) return { bg: '#f5f5f4', color: '#d6d3d1', border: '#f5f5f4' };
+    const samples = stats[c]?.samples;
+    if (!samples || samples.length < 2) {
+      return { bg: '#fff', color: '#78716c', border: '#e7e5e4' };
+    }
+    const score = computeKeyScore(samples);
+    if (score >= 0.85) return { bg: '#dcfce7', color: '#14532d', border: '#86efac' };
+    if (score >= 0.65) return { bg: '#fef3c7', color: '#78350f', border: '#fcd34d' };
+    if (score >= 0.4)  return { bg: '#ffedd5', color: '#7c2d12', border: '#fdba74' };
+    return { bg: '#fee2e2', color: '#7f1d1d', border: '#fca5a5' };
+  };
+
+  return (
+    <section className="py-8 border-t border-stone-200">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-[11px] uppercase tracking-[0.25em] text-stone-500 font-medium">
+          Letters · <span className="text-stone-900">{mode === 'send' ? 'send' : 'receive'} progress</span>
+        </h3>
+        <Legend />
+      </div>
+
+      <div className="grid grid-cols-7 sm:grid-cols-9 md:grid-cols-13 gap-1.5">
+        {letters.map(c => {
+          const { bg, color, border } = getColor(c);
+          const samples = stats[c]?.samples;
+          const isUnlocked = unlocked.includes(c);
+          const correctSamples = samples?.filter(s => s.correct) || [];
+          const avgMs = correctSamples.length > 0
+            ? Math.round(correctSamples.reduce((a,b) => a+b.ms, 0) / correctSamples.length)
+            : null;
+
+          return (
+            <div
+              key={c}
+              className="relative aspect-square rounded-lg border-2 flex flex-col items-center justify-center transition-all hover:scale-105 cursor-default"
+              style={{ background: bg, color, borderColor: border }}
+              title={isUnlocked ? `${c} — ${MORSE[c]}${avgMs ? ` · ${avgMs}ms` : ''}` : 'Locked'}
+            >
+              <span className="display text-xl font-bold leading-none">{c}</span>
+              <span className="mono text-[8px] mt-0.5 opacity-70 leading-none">{renderMorse(MORSE[c])}</span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function Legend() {
+  const items = [
+    { color: '#fee2e2', border: '#fca5a5' },
+    { color: '#ffedd5', border: '#fdba74' },
+    { color: '#fef3c7', border: '#fcd34d' },
+    { color: '#dcfce7', border: '#86efac' },
+  ];
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[10px] uppercase tracking-wider text-stone-500">slow</span>
+      <div className="flex items-center gap-1">
+        {items.map((it, i) => (
+          <div key={i} className="w-3 h-3 rounded border" style={{ background: it.color, borderColor: it.border }} />
+        ))}
+      </div>
+      <span className="text-[10px] uppercase tracking-wider text-stone-500">fast</span>
+    </div>
+  );
+}
+
+// ---------- PROGRESS BAR ----------
+function ProgressBar({ unlocked, stats, mode }) {
+  const total = INTRO_ORDER.length;
+  const unlockedCount = unlocked.length;
+
+  const scores = unlocked.map(c => computeKeyScore(stats[c]?.samples));
+  const avgScore = scores.length ? scores.reduce((a,b) => a+b, 0) / scores.length : 0;
+
+  const totalAttempts = Object.values(stats).reduce((a, s) => a + (s.samples?.length || 0), 0);
+  const totalCorrect = Object.values(stats).reduce((a, s) => a + (s.samples?.filter(x => x.correct).length || 0), 0);
+  const overallAcc = totalAttempts > 0 ? Math.round(totalCorrect / totalAttempts * 100) : 0;
+
+  return (
+    <section className="py-8 border-t border-stone-200">
+      <div className="grid grid-cols-3 gap-4">
+        <Stat label="Letters Learned" value={`${unlockedCount} / ${total}`} sub={unlockedCount === total ? 'complete' : 'unlocking'} />
+        <Stat label="Mastery" value={`${Math.round(avgScore * 100)}%`} sub="avg confidence" />
+        <Stat label="Accuracy" value={totalAttempts > 0 ? `${overallAcc}%` : '—'} sub={`${totalAttempts} attempts`} />
+      </div>
+
+      <div className="mt-6">
+        <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-2">
+          <span>Progress to next unlock</span>
+          <span>{Math.round((avgScore / UNLOCK_AVG_SCORE) * 100)}%</span>
+        </div>
+        <div className="h-1.5 bg-stone-200 rounded-full overflow-hidden">
+          <div
+            className="h-full transition-all duration-700 rounded-full"
+            style={{
+              width: `${Math.min(100, (avgScore / UNLOCK_AVG_SCORE) * 100)}%`,
+              background: avgScore >= UNLOCK_AVG_SCORE ? '#16a34a' : '#1a1a1a'
+            }}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Stat({ label, value, sub }) {
+  return (
+    <div className="p-4 rounded-xl bg-stone-50 border border-stone-200">
+      <div className="text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-1">{label}</div>
+      <div className="display text-3xl font-bold leading-tight">{value}</div>
+      <div className="text-xs text-stone-500 mt-1">{sub}</div>
+    </div>
+  );
+}
+
+// ---------- MODAL & PANELS ----------
+function Modal({ children, onClose }) {
+  useEffect(() => {
+    const onEsc = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onEsc);
+    return () => window.removeEventListener('keydown', onEsc);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center p-4 fade-in"
+      style={{ background: 'rgba(0,0,0,0.4)' }}
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SettingsPanel({ wpm, setWpm, muted, toggleMute, wordBreaks, toggleWordBreaks, hideTarget, toggleHideTarget, keyMode, toggleKeyMode, onReset, onClose }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="display text-2xl font-bold">Settings</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-stone-100"><X size={20} /></button>
+      </div>
+
+      <div className="space-y-6">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-medium">Goal Speed</label>
+            <span className="mono text-sm font-bold">{wpm} WPM</span>
+          </div>
+          <input
+            type="range" min="5" max="30" value={wpm}
+            onChange={e => setWpm(parseInt(e.target.value))}
+            className="w-full accent-stone-900"
+          />
+          <div className="flex justify-between text-[10px] uppercase tracking-wider text-stone-500 mt-1">
+            <span>Beginner · 5</span><span>Casual · 13</span><span>Fluent · 25+</span>
+          </div>
+          <p className="text-xs text-stone-500 mt-3 leading-relaxed">
+            This is the throughput you're working toward. In Receive mode, individual letters always sound at proper Morse rhythm ({wpm < CHAR_WPM_MIN ? CHAR_WPM_MIN : wpm} WPM character speed) — what changes is the silence between them. Below {CHAR_WPM_MIN} WPM you're using <span className="font-medium">Farnsworth timing</span>: the letters sound fast, the gaps stretch, and as you improve you raise the goal to shorten those gaps.
+          </p>
+        </div>
+
+        <div className="pt-4 border-t border-stone-200">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-medium">Send key style</label>
+            <div className="flex items-center p-0.5 rounded-full bg-stone-100 border border-stone-200">
+              <button
+                onClick={() => { if (keyMode !== 'straight') toggleKeyMode(); }}
+                className={`px-3 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider transition-all ${
+                  keyMode === 'straight' ? 'bg-stone-900 text-white shadow-sm' : 'text-stone-500 hover:text-stone-800'
+                }`}
+              >
+                Straight
+              </button>
+              <button
+                onClick={() => { if (keyMode !== 'paddle') toggleKeyMode(); }}
+                className={`px-3 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider transition-all ${
+                  keyMode === 'paddle' ? 'bg-stone-900 text-white shadow-sm' : 'text-stone-500 hover:text-stone-800'
+                }`}
+              >
+                Paddle
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-stone-500 mt-2 leading-relaxed">
+            <span className="font-medium">Straight</span> uses one key — hold for a dit, hold longer for a dah. You control duration and spacing, training rhythm and "fist". Use <kbd className="px-1.5 py-0.5 mono text-[10px] bg-stone-100 border border-stone-300 rounded">space</kbd> or the on-screen button.<br /><br />
+            <span className="font-medium">Paddle</span> uses two keys — tap <kbd className="px-1.5 py-0.5 mono text-[10px] bg-stone-100 border border-stone-300 rounded">,</kbd> for a dit, tap <kbd className="px-1.5 py-0.5 mono text-[10px] bg-stone-100 border border-stone-300 rounded">.</kbd> for a dah. Each tap emits one perfectly-timed shape at goal speed. Removes timing from the equation so you can focus on which-shape-when. Closer to how serious operators send at speed.
+          </p>
+        </div>
+
+        <div className="pt-4 border-t border-stone-200">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium">Word breaks in Receive</label>
+            <button
+              onClick={toggleWordBreaks}
+              className={`px-4 py-1.5 rounded-full text-xs font-medium border ${wordBreaks ? 'bg-stone-900 text-white border-stone-900' : 'bg-stone-100 text-stone-500 border-stone-200'}`}
+            >
+              {wordBreaks ? 'On' : 'Off'}
+            </button>
+          </div>
+          <p className="text-xs text-stone-500 mt-2 leading-relaxed">
+            When on, each batch contains {BATCH_WORD_COUNT} short words separated by longer silences you advance past with <kbd className="px-1.5 py-0.5 mono text-[10px] bg-stone-100 border border-stone-300 rounded">space</kbd>. When off, the same letters play as one continuous stream — useful when you're early in learning and want to focus on letter recognition without the extra cognitive load of catching word boundaries. Takes effect on the next batch.
+          </p>
+        </div>
+
+        <div className="pt-4 border-t border-stone-200">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-medium">Hide target in Send</label>
+            <button
+              onClick={toggleHideTarget}
+              className={`px-4 py-1.5 rounded-full text-xs font-medium border ${hideTarget ? 'bg-stone-900 text-white border-stone-900' : 'bg-stone-100 text-stone-500 border-stone-200'}`}
+            >
+              {hideTarget ? 'On' : 'Off'}
+            </button>
+          </div>
+          <p className="text-xs text-stone-500 mt-2 leading-relaxed">
+            When on, the target lane stays empty while you key — you have to produce the rhythm from memory of the morse pattern shown above the conveyor. As soon as the character finishes, the target appears with grading colours so you can compare it against what you sent. Useful once you no longer need the visual cue and want to practice purely from internalised patterns.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-between py-3 border-t border-stone-200">
+          <label className="text-sm font-medium">Sound</label>
+          <button
+            onClick={toggleMute}
+            className={`px-4 py-1.5 rounded-full text-xs font-medium border ${muted ? 'bg-stone-100 text-stone-500 border-stone-200' : 'bg-stone-900 text-white border-stone-900'}`}
+          >
+            {muted ? 'Muted' : 'On'}
+          </button>
+        </div>
+
+        <div className="pt-4 border-t border-stone-200">
+          <button
+            onClick={onReset}
+            className="w-full py-2.5 rounded-lg text-sm text-red-700 border border-red-200 hover:bg-red-50 transition"
+          >
+            Reset all progress
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoPanel({ onClose }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="display text-2xl font-bold">How it works</h2>
+        <button onClick={onClose} className="p-1 rounded hover:bg-stone-100"><X size={20} /></button>
+      </div>
+      <div className="space-y-4 text-sm text-stone-700 leading-relaxed">
+        <div>
+          <div className="text-xs uppercase tracking-wider text-stone-900 font-bold mb-1">Receive mode</div>
+          <p>
+            Practice runs in batches of {BATCH_WORD_COUNT} short words. Two flow modes:
+          </p>
+          <p className="mt-2">
+            <span className="font-medium">Step</span> — one letter plays, you type it, the next letter follows. A wrong keypress is recorded and the batch moves on; nothing is replayed (you can press Replay if you want to hear it again on purpose). Word breaks appear as narrower slots — press <kbd className="px-1.5 py-0.5 mono text-[11px] bg-stone-100 border border-stone-300 rounded">space</kbd> to advance past one. Good for first encounters with new letters.
+          </p>
+          <p className="mt-2">
+            <span className="font-medium">Run</span> — the whole batch streams at your goal speed without stopping. Type what you hear into the keyboard, copying behind the audio. Word breaks are inferred — no need to type spaces. Closer to real Morse copy: you can't pause to think, and your typing rhythm becomes part of the practice. Use this once letters feel familiar.
+          </p>
+          <p className="mt-2">
+            After each batch you'll see your accuracy, average reaction time, and how close you got to your goal speed. You start with just <span className="mono font-bold">E</span> (·) and <span className="mono font-bold">T</span> (—); new letters unlock as you build accuracy and speed.
+          </p>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wider text-stone-900 font-bold mb-1">Send mode</div>
+          <p>
+            The conveyor is always flowing. Each target letter slides in from the right and its shapes cross the strike line at goal speed. Two lanes share the same time axis: <span style={{ color: '#a16207' }} className="font-medium">target</span> on top shows the dits and dahs you should send, <span style={{ color: '#1d4ed8' }} className="font-medium">yours</span> below shows what you actually keyed. After each letter the target shapes recolour by timing match — green for good, red for off.
+          </p>
+          <p className="mt-2">
+            <span className="font-medium">Straight key</span> (default) — one button, hold for a dit, hold longer for a dah. You control duration and the inter-element gaps. This trains rhythm — your "fist". The bar in the yours lane grows in real time as you hold; release it before its right edge passes the strike line and you've sent a dit.
+          </p>
+          <p className="mt-2">
+            <span className="font-medium">Paddle</span> — two keys, <kbd className="px-1.5 py-0.5 mono text-[10px] bg-stone-100 border border-stone-300 rounded">,</kbd> for dit, <kbd className="px-1.5 py-0.5 mono text-[10px] bg-stone-100 border border-stone-300 rounded">.</kbd> for dah. Each tap emits one machine-perfect shape; rapid taps queue up with proper inter-element gaps. Removes timing from the equation so you can focus on "which shape, when". Closer to how fast operators send — straight-key rhythm tops out around 15 WPM, paddle keying goes well past 30. Switch in Settings.
+          </p>
+        </div>
+        <p>
+          Each mode tracks its own progress. The letters you've unlocked in <span className="font-bold">receive</span> are independent of those in <span className="font-bold">send</span> — recognising a sound by ear is a different skill from keying it out, so they advance separately.
+        </p>
+        <p>
+          The grid below the trainer colours each letter by your current mastery in whichever mode you're in. <span style={{ color: '#7f1d1d' }} className="font-medium">Red</span> means slow or error-prone; <span style={{ color: '#14532d' }} className="font-medium">green</span> means fluent. Switch modes to see the other lane.
+        </p>
+        <p className="text-stone-500 text-xs pt-3 border-t border-stone-200">
+          The WPM slider in settings sets your <span className="font-medium">goal speed</span>. Below {CHAR_WPM_MIN} WPM, letters sound fast and gaps stretch (Farnsworth timing); above, everything plays at goal speed. Start slow, raise it as you get fluent.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------- HELPERS ----------
+function renderMorse(code) {
+  if (!code) return '';
+  return code.split('').map(c => c === '.' ? '·' : '—').join(' ');
+}
+
+// ---------- MOUNT ----------
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
