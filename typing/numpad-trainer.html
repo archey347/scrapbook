@@ -199,9 +199,18 @@
     animation: blink 1s infinite;
     border-radius: 2px;
   }
+  .char.cursor.cursor-error {
+    background: var(--warn);
+    animation: shake 0.25s ease;
+  }
   @keyframes blink {
     0%, 50% { opacity: 1; }
     51%, 100% { opacity: 0.4; }
+  }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-3px); }
+    75% { transform: translateX(3px); }
   }
 
   /* STATS BAR */
@@ -578,7 +587,9 @@
     batch: '',
     typed: [],       // per-position: true=correct, false=incorrect, undefined=not yet typed
     pos: 0,
-    errors: 0,
+    errors: 0,       // wrong presses in the current batch
+    keystrokes: 0,   // total character presses in the current batch (right + wrong)
+    cursorError: false, // true while the last press at the cursor was wrong (blocks advance)
     totalErrors: 0,
     startTime: null,
     batches: 0,
@@ -820,7 +831,7 @@
       let cls = 'char';
       if (ch === ' ') cls += ' space';
       if (i === state.pos) {
-        cls += ' cursor';
+        cls += state.cursorError ? ' cursor cursor-error' : ' cursor';
       } else if (i < state.pos) {
         cls += state.typed[i] ? ' correct' : ' incorrect';
       } else {
@@ -836,6 +847,8 @@
     state.typed = new Array(state.batch.length);
     state.pos = 0;
     state.errors = 0;
+    state.keystrokes = 0;
+    state.cursorError = false;
     state.startTime = null;
     state.inputBuffer = '';
     prevKeystroke = null;
@@ -875,6 +888,7 @@
       if (state.pos > 0) {
         state.pos--;
         state.typed[state.pos] = undefined;
+        state.cursorError = false;
         prevKeystroke = null; // break adjacency; next transition won't be recorded
         render();
       }
@@ -902,18 +916,21 @@
     }
     prevKeystroke = { position: state.pos, time: now, expectedChar: expected, wasCorrect: isCorrect };
 
+    state.keystrokes++;
     if (typed === expected) {
       if (expected !== ' ') recordAttempt(expected, true);
       state.typed[state.pos] = true;
+      state.cursorError = false;
+      state.pos++;
     } else {
+      // block on error: stay put until the correct key is pressed
       state.errors++;
       state.totalErrors++;
       if (expected !== ' ') recordAttempt(expected, false);
       state.keyErrors[expected] = (state.keyErrors[expected] || 0) + 1;
-      state.typed[state.pos] = false;
+      state.cursorError = true;
       updateHeatmap();
     }
-    state.pos++;
     render();
     if (state.pos === state.batch.length) {
       completeBatch();
@@ -963,7 +980,9 @@
     const elapsed = (performance.now() - state.startTime) / 1000 / 60;
     const correct = correctCount();
     const cpm = Math.round(correct / elapsed);
-    const acc = Math.round((correct / state.batch.length) * 100);
+    // every position was ultimately typed correctly, so accuracy is correct
+    // presses over total presses (wrong presses inflate the denominator)
+    const acc = state.keystrokes > 0 ? Math.round((correct / state.keystrokes) * 100) : 100;
     state.batches++;
 
     state.history.unshift({
