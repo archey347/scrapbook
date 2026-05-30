@@ -1187,10 +1187,12 @@
     persist();
   });
 
-  // ---- PERSISTENCE (via window.storage) ----
-  async function persist() {
+  // ---- PERSISTENCE (via localStorage) ----
+  const STORAGE_KEY = 'numpadr-state';
+
+  function persist() {
     try {
-      await window.storage.set('numpadr-state', JSON.stringify({
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
         mode: state.mode,
         lenBucket: state.lenBucket,
         progression: state.progression,
@@ -1203,11 +1205,11 @@
     } catch (e) { /* storage unavailable, ignore */ }
   }
 
-  async function loadPersisted() {
+  function loadPersisted() {
     try {
-      const r = await window.storage.get('numpadr-state');
-      if (r && r.value) {
-        const data = JSON.parse(r.value);
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const data = JSON.parse(raw);
         if (data.mode) state.mode = data.mode;
         if (data.lenBucket) state.lenBucket = data.lenBucket;
         if (data.progression) state.progression = data.progression;
@@ -1241,9 +1243,9 @@
   }
 
   // ---- INIT ----
-  (async function init() {
+  (function init() {
     renderKeypad();
-    await loadPersisted();
+    loadPersisted();
     updateHeatmap();
     lastUnlockedSize = unlockedKeys().size; // initialize without flashing
     renderProgression();
