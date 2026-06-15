@@ -23,7 +23,12 @@
   .legend.collapsed .legend-bd { display:none; }
   .legend-cat + .legend-cat { margin-top:6px; border-top:1px solid #ddd; padding-top:6px; }
   .legend-cat > label { display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer; margin-bottom:3px; }
+  .legend-cat-hdr { display:flex; align-items:center; justify-content:space-between; margin-bottom:3px; }
+  .legend-cat-hdr label { display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer; }
+  .sel-all-btn { padding:1px 6px; border:1px solid #cfd6e4; border-radius:4px; background:#f6f8fc; cursor:pointer; font-size:11px; color:#445; line-height:1.4; flex-shrink:0; }
+  .sel-all-btn:hover { background:#e8edf5; }
   .legend .row { display:flex; align-items:center; gap:8px; margin:2px 0; }
+  .legend .row .row-nm { flex:1; }
   .swatch { width:16px; height:4px; border-radius:2px; flex:0 0 auto; }
   .dot { width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.3); flex:0 0 auto; }
   .wp-label {
@@ -209,8 +214,12 @@ legend.onAdd = function() {
   const div = L.DomUtil.create('div', 'legend');
   L.DomEvent.disableClickPropagation(div);
   L.DomEvent.disableScrollPropagation(div);
-  let stratRows = DATA.groups.map(g =>
-    `<div class="row"><span class="dot" style="background:${g.color}"></span>${g.name}</div>`
+  let stratRows = DATA.groups.map((g, i) =>
+    `<div class="row">`+
+      `<span class="dot" style="background:${g.color}"></span>`+
+      `<span class="row-nm">${g.name}</span>`+
+      `<button class="sel-all-btn" data-gi="${i}">+All</button>`+
+    `</div>`
   ).join('');
   div.innerHTML =
     `<div class="legend-hd"><span>📋 ${DATA.event || 'Map'}</span><span class="chev">▾</span></div>`+
@@ -226,12 +235,18 @@ legend.onAdd = function() {
         stratRows+
       `</div>`+
       `<div class="legend-cat">`+
-        `<label><input type="checkbox" id="leg-evo" checked> Evolution</label>`+
+        `<div class="legend-cat-hdr">`+
+          `<label><input type="checkbox" id="leg-evo" checked> Evolution</label>`+
+          `<button class="sel-all-btn" id="sel-evo-all">+All</button>`+
+        `</div>`+
         `<div class="row"><span class="dot" style="background:#0f9d58"></span>Evo hub</div>`+
         `<div class="row"><span class="dot" style="background:#a61b4a"></span>Evo base</div>`+
       `</div>`+
       `<div class="legend-cat">`+
-        `<label><input type="checkbox" id="leg-campsite" checked> Campsite</label>`+
+        `<div class="legend-cat-hdr">`+
+          `<label><input type="checkbox" id="leg-campsite" checked> Campsite</label>`+
+          `<button class="sel-all-btn" id="sel-camp-all">+All</button>`+
+        `</div>`+
         `<div class="row"><span style="font-size:14px;line-height:1">⛺</span>Campsite</div>`+
       `</div>`+
     `</div>`;
@@ -247,6 +262,18 @@ legend.onAdd = function() {
   });
   div.querySelector('#leg-campsite').addEventListener('change', e => {
     e.target.checked ? campsiteLayer.addTo(map) : map.removeLayer(campsiteLayer);
+  });
+  div.querySelectorAll('.sel-all-btn[data-gi]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const g = DATA.groups[+btn.dataset.gi];
+      g.waypoints.forEach(w => window.NAV.addStop(w.lat, w.lng, w.name));
+    });
+  });
+  div.querySelector('#sel-evo-all').addEventListener('click', () => {
+    EVO.checkpoints.forEach(c => window.NAV.addStop(c.lat, c.lng, 'Evo ' + c.name));
+  });
+  div.querySelector('#sel-camp-all').addEventListener('click', () => {
+    CAMPSITE.forEach(c => window.NAV.addStop(c.lat, c.lng, c.name));
   });
   return div;
 };
