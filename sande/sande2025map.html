@@ -9,10 +9,20 @@
   html, body { margin:0; height:100%; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
   #map { position:absolute; inset:0; }
   .legend {
-    background:#fff; padding:10px 12px; border-radius:8px; line-height:1.5;
+    background:#fff; border-radius:8px; line-height:1.5; overflow:hidden;
     box-shadow:0 1px 4px rgba(0,0,0,.3); font-size:13px; max-width:220px;
   }
-  .legend h4 { margin:0 0 6px; font-size:13px; }
+  .legend-hd {
+    display:flex; align-items:center; justify-content:space-between;
+    gap:8px; padding:8px 12px; cursor:pointer; background:#37474f; color:#fff;
+    user-select:none; font-weight:600; font-size:13px;
+  }
+  .legend-hd .chev { transition:transform .15s; font-size:12px; }
+  .legend.collapsed .legend-hd .chev { transform:rotate(-90deg); }
+  .legend-bd { padding:10px 12px; }
+  .legend.collapsed .legend-bd { display:none; }
+  .legend-cat + .legend-cat { margin-top:6px; border-top:1px solid #ddd; padding-top:6px; }
+  .legend-cat > label { display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer; margin-bottom:3px; }
   .legend .row { display:flex; align-items:center; gap:8px; margin:2px 0; }
   .swatch { width:16px; height:4px; border-radius:2px; flex:0 0 auto; }
   .dot { width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.3); flex:0 0 auto; }
@@ -171,34 +181,74 @@ EVO.checkpoints.forEach(c => {
 });
 evoLayer.addTo(map);
 
+// Campsite markers
+const campsiteLayer = L.layerGroup();
+const CAMPSITE = [
+  { name:'Campsite', lat:51.726, lng:-2.048 }
+];
+CAMPSITE.forEach(c => {
+  allLatLngs.push([c.lat, c.lng]);
+  L.marker([c.lat, c.lng], {
+    icon: L.divIcon({
+      className:'campsite-icon',
+      html:'<div style="font-size:22px;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))">⛺</div>',
+      iconSize:[26,26], iconAnchor:[13,13]
+    })
+  })
+  .bindPopup(`<b>${c.name}</b><br/>${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}<br/><button class="add-stop-btn" data-lat="${c.lat}" data-lng="${c.lng}" data-name="${c.name}">➕ Add as stop</button>`)
+  .addTo(campsiteLayer);
+});
+campsiteLayer.addTo(map);
+
 // Fit to everything
 map.fitBounds(L.latLngBounds(allLatLngs), { padding:[30,30] });
 
-// Layer toggle
-L.control.layers(null, {
-  'Checkpoints': wpLayer,
-  'Roads & routes': pathsLayer,
-  'Evolution checkpoints': evoLayer
-}, { collapsed:false }).addTo(map);
-
-// Legend
+// Legend (with per-category visibility toggles and collapse)
 const legend = L.control({ position:'bottomleft' });
 legend.onAdd = function() {
   const div = L.DomUtil.create('div', 'legend');
-  let html = `<h4>${DATA.event || 'Map'}</h4>`;
-  const hdr = (t, first) => `<div style="${first?'':'margin-top:6px;border-top:1px solid #ddd;padding-top:6px;'}font-weight:600">${t}</div>`;
-  html += hdr('Roads', true);
-  html += `<div class="row"><span class="swatch" style="background:#1a9850"></span>Driveable (preferred)</div>`;
-  html += `<div class="row"><span class="swatch" style="background:#d73027"></span>Do not drive / no access</div>`;
-  html += `<div class="row"><span class="swatch" style="background:#555;height:0;border-top:3px dashed #555"></span>Use discretion</div>`;
-  html += hdr('Strategy');
-  DATA.groups.forEach(g => {
-    html += `<div class="row"><span class="dot" style="background:${g.color}"></span>${g.name}</div>`;
+  L.DomEvent.disableClickPropagation(div);
+  L.DomEvent.disableScrollPropagation(div);
+  let stratRows = DATA.groups.map(g =>
+    `<div class="row"><span class="dot" style="background:${g.color}"></span>${g.name}</div>`
+  ).join('');
+  div.innerHTML =
+    `<div class="legend-hd"><span>📋 ${DATA.event || 'Map'}</span><span class="chev">▾</span></div>`+
+    `<div class="legend-bd">`+
+      `<div class="legend-cat">`+
+        `<label><input type="checkbox" id="leg-roads" checked> Roads</label>`+
+        `<div class="row"><span class="swatch" style="background:#1a9850"></span>Driveable (preferred)</div>`+
+        `<div class="row"><span class="swatch" style="background:#d73027"></span>Do not drive / no access</div>`+
+        `<div class="row"><span class="swatch" style="background:#555;height:0;border-top:3px dashed #555"></span>Use discretion</div>`+
+      `</div>`+
+      `<div class="legend-cat">`+
+        `<label><input type="checkbox" id="leg-strategy" checked> Strategy</label>`+
+        stratRows+
+      `</div>`+
+      `<div class="legend-cat">`+
+        `<label><input type="checkbox" id="leg-evo" checked> Evolution</label>`+
+        `<div class="row"><span class="dot" style="background:#0f9d58"></span>Evo hub</div>`+
+        `<div class="row"><span class="dot" style="background:#a61b4a"></span>Evo base</div>`+
+      `</div>`+
+      `<div class="legend-cat">`+
+        `<label><input type="checkbox" id="leg-campsite" checked> Campsite</label>`+
+        `<div class="row"><span style="font-size:14px;line-height:1">⛺</span>Campsite</div>`+
+      `</div>`+
+    `</div>`;
+  div.querySelector('.legend-hd').addEventListener('click', () => div.classList.toggle('collapsed'));
+  div.querySelector('#leg-roads').addEventListener('change', e => {
+    e.target.checked ? pathsLayer.addTo(map) : map.removeLayer(pathsLayer);
   });
-  html += hdr('Evolution');
-  html += `<div class="row"><span class="dot" style="background:#0f9d58"></span>Evo hub</div>`;
-  html += `<div class="row"><span class="dot" style="background:#a61b4a"></span>Evo base</div>`;
-  return div.innerHTML = html, div;
+  div.querySelector('#leg-strategy').addEventListener('change', e => {
+    e.target.checked ? wpLayer.addTo(map) : map.removeLayer(wpLayer);
+  });
+  div.querySelector('#leg-evo').addEventListener('change', e => {
+    e.target.checked ? evoLayer.addTo(map) : map.removeLayer(evoLayer);
+  });
+  div.querySelector('#leg-campsite').addEventListener('change', e => {
+    e.target.checked ? campsiteLayer.addTo(map) : map.removeLayer(campsiteLayer);
+  });
+  return div;
 };
 legend.addTo(map);
 
