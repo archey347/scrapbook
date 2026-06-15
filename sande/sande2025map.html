@@ -285,7 +285,8 @@ legend.addTo(map);
      `drive:true` segments (excludes red "do-not-drive" roads),
      with an optional "avoid use-discretion" toggle.
    - Multiple stops, shortest path via Dijkstra, optional
-     nearest-first stop-order optimisation.
+     stop-order optimisation (network-distance nearest-neighbour
+     + 2-opt) that keeps the start and end points fixed.
    ============================================================ */
 (function(){
   /* ---------- geometry helpers ---------- */
@@ -415,6 +416,27 @@ legend.addTo(map);
     return {dist:dist.get(dst), path:path.reverse()};
   }
 
+  // single-source Dijkstra returning network distances to a set of target
+  // node ids; stops as soon as every target has been settled.
+  function dijkstraTo(src,targets,mode,avoidDisc,extra){
+    const need=new Set(targets); need.delete(src);
+    const out=new Map(); if(!need.size) return out;
+    const dist=new Map([[src,0]]), h=new Heap(); h.push(0,src);
+    while(h.size()){
+      const [d,u]=h.pop();
+      if(d>(dist.get(u)??Infinity)) continue;
+      if(need.has(u)){ out.set(u,d); need.delete(u); if(!need.size) break; }
+      const list=[]; if(u<nodes.length) for(const e of adj[u]) list.push(e);
+      const ex=extra.get(u); if(ex) for(const e of ex) list.push(e);
+      for(const e of list){
+        if(!allow(e,mode,avoidDisc)) continue;
+        const nd=d+e.dist;
+        if(nd<(dist.get(e.to)??Infinity)){ dist.set(e.to,nd); h.push(nd,e.to); }
+      }
+    }
+    return out;
+  }
+
   function route(points,mode,avoidDisc){
     const {ids,tempCoord,extra}=overlay(points,mode,avoidDisc);
     const legs=[]; let total=0, ok=true;
@@ -427,17 +449,55 @@ legend.addTo(map);
     return {ok,total,legs,offs:ids.map(x=>x.off)};
   }
 
-  // nearest-first ordering, keeping the first point (start) fixed
-  function optimizeOrder(points){
-    if(points.length<=2) return points.slice();
-    const rest=points.slice(1), used=Array(rest.length).fill(false), out=[points[0]];
-    let cur=points[0];
-    for(let k=0;k<rest.length;k++){
-      let bi=-1,bd=Infinity;
-      for(let j=0;j<rest.length;j++){ if(used[j])continue; const d=haversine(cur,rest[j]); if(d<bd){bd=d;bi=j;} }
-      used[bi]=true; out.push(rest[bi]); cur=rest[bi];
+  // Order stops to minimise total travel, keeping the first point (start)
+  // and last point (end) fixed — only the intermediate stops are reordered.
+  // Uses real road-network distances (not straight-line) and refines the
+  // greedy nearest-neighbour tour with 2-opt local search.
+  function optimizeOrder(points,mode,avoidDisc){
+    const n=points.length;
+    if(n<=3) return points.slice(); // 0 or 1 intermediate stop: nothing to reorder
+
+    // network-distance matrix between every pair of points
+    const {ids,extra}=overlay(points,mode,avoidDisc);
+    const idAt=i=>ids[i].id, allIds=ids.map(x=>x.id);
+    const D=Array.from({length:n},()=>Array(n).fill(Infinity));
+    for(let i=0;i<n;i++){
+      D[i][i]=0;
+      const out=dijkstraTo(idAt(i),allIds,mode,avoidDisc,extra);
+      for(let j=0;j<n;j++) if(j!==i){
+        const d=out.get(idAt(j));
+        // fall back to straight-line when no road connects this pair
+        D[i][j]= d==null ? haversine(points[i],points[j]) : d;
+      }
     }
-    return out;
+
+    // greedy nearest-neighbour over the intermediate stops, starting at the
+    // fixed start (0); the fixed end (n-1) is appended afterwards.
+    const mid=[]; for(let i=1;i<n-1;i++) mid.push(i);
+    const order=[]; let cur=0;
+    while(mid.length){
+      let bi=0,bd=Infinity;
+      for(let k=0;k<mid.length;k++){ const d=D[cur][mid[k]]; if(d<bd){bd=d;bi=k;} }
+      cur=mid.splice(bi,1)[0]; order.push(cur);
+    }
+    const seq=[0,...order,n-1];
+
+    // 2-opt: reverse interior sub-paths while the endpoints stay pinned
+    let improved=true;
+    while(improved){
+      improved=false;
+      for(let i=1;i<seq.length-2;i++){
+        for(let j=i+1;j<seq.length-1;j++){
+          const before=D[seq[i-1]][seq[i]]+D[seq[j]][seq[j+1]];
+          const after =D[seq[i-1]][seq[j]]+D[seq[i]][seq[j+1]];
+          if(after+1e-9<before){
+            for(let lo=i,hi=j;lo<hi;lo++,hi--){ const t=seq[lo]; seq[lo]=seq[hi]; seq[hi]=t; }
+            improved=true;
+          }
+        }
+      }
+    }
+    return seq.map(i=>points[i]);
   }
 
   /* ---------- formatting ---------- */
@@ -486,7 +546,7 @@ legend.addTo(map);
         '</div>'+
         '<div class="nav-row"><label class="ck"><input type="checkbox" id="nav-startme" checked> Start at my location</label>'+
           '<div id="nav-locnote" class="nav-hint" style="margin:2px 0 0"></div></div>'+
-        '<div class="nav-row"><label class="ck"><input type="checkbox" id="nav-opt"> Optimise stop order</label></div>'+
+        '<div class="nav-row"><label class="ck" title="Reorders the intermediate stops to shorten the trip; the start and final stop stay put."><input type="checkbox" id="nav-opt"> Optimise stop order <span class="nav-hint" style="display:inline">(keeps start &amp; end)</span></label></div>'+
         '<ul class="stops" id="nav-stops"></ul>'+
         '<div class="nav-acts">'+
           '<button id="nav-pick">📍 Pin on map</button>'+
@@ -580,7 +640,7 @@ legend.addTo(map);
     state.stops.forEach(s=>pts.push(s));
     if(pts.length<2){ res.innerHTML='<span class="warn">Add at least two points (or enable “Start at my location” + one stop).</span>'; return; }
 
-    const ordered = state.optimize ? optimizeOrder(pts) : pts;
+    const ordered = state.optimize ? optimizeOrder(pts, state.mode, state.avoidDisc) : pts;
     const r = route(ordered.map(p=>({lat:p.lat,lng:p.lng})), state.mode, state.avoidDisc);
 
     routeLayer.clearLayers();
