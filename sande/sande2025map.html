@@ -856,12 +856,14 @@ legend.addTo(map);
     state.nav=buildNav(lr.ordered,lr.r,lr.mode);
     ensureBanner(); banner.classList.remove('hidden','off'); showRecalc(false);
     banner.querySelector('#nb-voice').textContent=state.voice?'🔊':'🔇';
+    const np=document.querySelector('.nav-panel'); if(np) np.style.display='none';
     map.setView([state.userLatLng.lat,state.userLatLng.lng],18);
     speak('Starting navigation');
     navUpdate(state.userLatLng);
   }
   function stopNav(){
     state.nav=null;
+    const np=document.querySelector('.nav-panel'); if(np) np.style.display='';
     if(banner) banner.classList.add('hidden');
     if(navArrow){ map.removeLayer(navArrow); navArrow=null; }
     try{speechSynthesis.cancel();}catch(e){}
