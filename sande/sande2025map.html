@@ -92,6 +92,38 @@
   .nav-res table { width:100%; border-collapse:collapse; margin-top:4px; }
   .nav-res td { padding:2px 0; vertical-align:top; }
   .nav-res td.r { text-align:right; white-space:nowrap; color:#556; }
+  #nav-start { background:#1f2a37; color:#fff; border-color:#1f2a37; font-weight:600; }
+
+  /* ---- Turn-by-turn navigation banner ---- */
+  .navbar {
+    position:fixed; top:0; left:0; right:0; z-index:1200;
+    background:#1f2a37; color:#fff; box-shadow:0 2px 10px rgba(0,0,0,.45);
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  .navbar.hidden { display:none; }
+  .nb-main { display:flex; align-items:center; gap:12px; padding:10px 14px; }
+  .navbar.off .nb-main { background:#b71c1c; }
+  .nb-arrow { font-size:32px; line-height:1; width:44px; text-align:center; flex:0 0 auto; }
+  .nb-txt { flex:1; min-width:0; }
+  .nb-prim { font-size:19px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nb-dist { font-size:14px; color:#cfd8e3; }
+  .nb-tools { display:flex; gap:6px; flex:0 0 auto; }
+  .nb-tools button {
+    background:rgba(255,255,255,.16); color:#fff; border:none; border-radius:8px;
+    width:38px; height:38px; font-size:17px; cursor:pointer;
+  }
+  .nb-tools button:hover { background:rgba(255,255,255,.30); }
+  .nb-sub {
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:6px 14px; background:#27313d; font-size:13px;
+  }
+  .nb-sub.hidden, #nb-recalc.hidden { display:none; }
+  #nb-recalc {
+    background:#fff; color:#b71c1c; border:none; border-radius:7px;
+    padding:5px 11px; font-weight:600; cursor:pointer; font-size:12.5px;
+  }
+  .nav-cone { color:#1976d2; font-size:22px; line-height:1; text-shadow:0 0 2px #fff,0 0 3px #fff; }
+  .nav-cone-wrap { background:none; border:none; }
 
   .route-badge div {
     width:24px; height:24px; border-radius:50%; color:#fff; font-weight:700;
@@ -509,7 +541,8 @@ legend.addTo(map);
   /* ---------- state ---------- */
   const routeLayer=L.layerGroup().addTo(map);
   const state={ mode:'walk', avoidDisc:false, startAtMe:true, optimize:false,
-                stops:[], pick:false, userLatLng:null };
+                stops:[], pick:false, userLatLng:null,
+                lastRoute:null, nav:null, voice:true };
 
   /* ---------- live location ---------- */
   let userMarker=null, accCircle=null;
@@ -522,6 +555,7 @@ legend.addTo(map);
       accCircle=L.circle([lat,lng],{radius:accuracy,color:'#1976d2',weight:1,fillColor:'#1976d2',fillOpacity:.12}).addTo(map);
     } else { userMarker.setLatLng([lat,lng]); accCircle.setLatLng([lat,lng]).setRadius(accuracy); }
     const note=document.getElementById('nav-locnote'); if(note) note.textContent='';
+    if(state.nav) navUpdate(state.userLatLng);
   }
   function onLocErr(){ const n=document.getElementById('nav-locnote');
     if(n) n.textContent='Location unavailable (permission denied or no GPS).'; }
@@ -584,7 +618,7 @@ legend.addTo(map);
     $('nav-pick').classList.toggle('on',state.pick);
     map.getContainer().style.cursor = state.pick ? 'crosshair' : '';
   });
-  $('nav-clear').addEventListener('click',()=>{ routeLayer.clearLayers(); $('nav-res').innerHTML=''; state.stops.length=0; state.pick=false; $('nav-pick').classList.remove('on'); map.getContainer().style.cursor=''; renderStops(); });
+  $('nav-clear').addEventListener('click',()=>{ stopNav(); routeLayer.clearLayers(); $('nav-res').innerHTML=''; state.stops.length=0; state.lastRoute=null; state.pick=false; $('nav-pick').classList.remove('on'); map.getContainer().style.cursor=''; renderStops(); });
 
   // stops list
   function renderStops(){
@@ -643,20 +677,9 @@ legend.addTo(map);
     const ordered = state.optimize ? optimizeOrder(pts, state.mode, state.avoidDisc) : pts;
     const r = route(ordered.map(p=>({lat:p.lat,lng:p.lng})), state.mode, state.avoidDisc);
 
-    routeLayer.clearLayers();
-    const all=[];
-    r.legs.forEach(leg=>{ if(!leg) return;
-      L.polyline(leg.coords,{color:'#fff',weight:9,opacity:.9}).addTo(routeLayer);
-      L.polyline(leg.coords,{color:'#2962ff',weight:5,opacity:.95}).addTo(routeLayer);
-      leg.coords.forEach(c=>all.push(c));
-    });
-    ordered.forEach((p,i)=>{
-      const role = i===0?'start' : i===ordered.length-1?'end' : 'mid';
-      L.marker([p.lat,p.lng],{icon:badge(i+1,role),zIndexOffset:1000})
-        .bindPopup('<b>'+(i+1)+'. '+p.label+'</b>').addTo(routeLayer);
-      all.push([p.lat,p.lng]);
-    });
+    const all=drawRoute(ordered,r);
     if(all.length) map.fitBounds(L.latLngBounds(all),{padding:[40,40]});
+    state.lastRoute={ordered,r,mode:state.mode};
 
     // results
     const spd=SPEED[state.mode];
@@ -673,8 +696,240 @@ legend.addTo(map);
     const far=r.offs.filter(o=>o>120).length;
     if(far) html+='<div class="nav-hint" style="margin-top:5px">Note: '+far+' point(s) are &gt;120 m from any '+(state.mode==='drive'?'driveable ':'')+'road; straight connectors are used to reach the network.</div>';
     if(state.mode==='drive') html+='<div class="nav-hint">Driving avoids red “do-not-drive” roads'+(state.avoidDisc?' and grey discretion roads':'')+'.</div>';
+    if(r.ok) html+='<div class="nav-acts" style="margin-top:8px"><button id="nav-start">▶ Start navigation</button></div>';
     res.innerHTML=html;
+    const sb=$('nav-start'); if(sb) sb.addEventListener('click',startNav);
   });
+
+  /* =====================================================================
+     TURN-BY-TURN NAVIGATION ("satnav" mode)
+     Instructions are derived purely from the planned route's geometry —
+     the bearing change at each vertex of the polyline — so we get
+     left / right / slight / sharp / U-turn guidance without needing any
+     street-name data in the road network.
+     ===================================================================== */
+
+  // initial compass bearing from point a=[lat,lng] to b=[lat,lng]
+  function bearing(a,b){
+    const la1=toRad(a[0]), la2=toRad(b[0]), dl=toRad(b[1]-a[1]);
+    const y=Math.sin(dl)*Math.cos(la2);
+    const x=Math.cos(la1)*Math.sin(la2)-Math.sin(la1)*Math.cos(la2)*Math.cos(dl);
+    return (Math.atan2(y,x)*180/Math.PI+360)%360;
+  }
+
+  // draw a computed route onto routeLayer; returns all coords for fitBounds
+  function drawRoute(ordered,r){
+    routeLayer.clearLayers();
+    const all=[];
+    r.legs.forEach(leg=>{ if(!leg) return;
+      L.polyline(leg.coords,{color:'#fff',weight:9,opacity:.9}).addTo(routeLayer);
+      L.polyline(leg.coords,{color:'#2962ff',weight:5,opacity:.95}).addTo(routeLayer);
+      leg.coords.forEach(c=>all.push(c));
+    });
+    ordered.forEach((p,i)=>{
+      const role = i===0?'start' : i===ordered.length-1?'end' : 'mid';
+      L.marker([p.lat,p.lng],{icon:badge(i+1,role),zIndexOffset:1000})
+        .bindPopup('<b>'+(i+1)+'. '+p.label+'</b>').addTo(routeLayer);
+      all.push([p.lat,p.lng]);
+    });
+    return all;
+  }
+
+  // build the navigation model (flattened path + maneuver list) from a route
+  function buildNav(ordered,r,mode){
+    const path=[], stopAt=[]; let started=false;
+    r.legs.forEach((leg,li)=>{
+      if(!leg) return;
+      const c=leg.coords;
+      if(!started){ path.push(c[0]); stopAt[li]=0; started=true; }
+      else stopAt[li]=path.length-1;          // joint = previous leg's end
+      for(let i=1;i<c.length;i++) path.push(c[i]);
+      stopAt[li+1]=path.length-1;             // end of this leg = ordered[li+1]
+    });
+    const cum=[0];
+    for(let i=1;i<path.length;i++)
+      cum[i]=cum[i-1]+haversine({lat:path[i-1][0],lng:path[i-1][1]},{lat:path[i][0],lng:path[i][1]});
+    const total=cum[path.length-1]||0;
+
+    // turn maneuvers from bearing changes at interior vertices
+    const mans=[];
+    for(let i=1;i<path.length-1;i++){
+      const inB=bearing(path[i-1],path[i]), outB=bearing(path[i],path[i+1]);
+      const d=((outB-inB+540)%360)-180, ad=Math.abs(d);   // + = right, - = left
+      if(ad<18) continue;                                 // basically straight
+      const side=d>0?'right':'left';
+      let type = ad>=160?'uturn' : ad>=125?'sharp' : ad>=40?'turn' : 'slight';
+      mans.push({cum:cum[i], type, side, annPrep:false, annNow:false});
+    }
+    // waypoint (intermediate stop) and final arrival maneuvers
+    const stopCum=[];
+    for(let k=0;k<ordered.length;k++) stopCum[k]= stopAt[k]!=null ? cum[stopAt[k]] : null;
+    for(let k=1;k<ordered.length-1;k++)
+      mans.push({cum:stopCum[k], type:'waypoint', label:ordered[k].label, annPrep:false, annNow:false});
+    mans.push({cum:total, type:'arrive', label:ordered[ordered.length-1].label, annPrep:false, annNow:false});
+    mans.sort((a,b)=>a.cum-b.cum);
+
+    return { path, cum, total, mans, ordered, stopCum, mode,
+             midx:0, off:0, offState:false, arrived:false, follow:true };
+  }
+
+  function manText(m){
+    if(m.type==='arrive')   return 'Arrive at '+m.label;
+    if(m.type==='waypoint') return 'Reach '+m.label;
+    if(m.type==='uturn')    return 'Make a U-turn';
+    const dir = m.side==='right'?'right':'left';
+    if(m.type==='sharp')    return 'Sharp '+dir;
+    if(m.type==='slight')   return 'Slight '+dir;
+    return 'Turn '+dir;
+  }
+  function manArrow(m){
+    if(m.type==='arrive')   return '🏁';
+    if(m.type==='waypoint') return '📍';
+    if(m.type==='uturn')    return '⮌';
+    const right = m.side==='right';
+    if(m.type==='slight')   return right?'↗':'↖';
+    return right?'➡':'⬅';            // turn & sharp share the glyph; text differs
+  }
+
+  // nearest distance-along-route for a point (used by recalculation)
+  function projectS(u,nav){
+    let best=Infinity,s=0;
+    for(let i=0;i<nav.path.length-1;i++){
+      const a={lat:nav.path[i][0],lng:nav.path[i][1]}, b={lat:nav.path[i+1][0],lng:nav.path[i+1][1]};
+      const pr=projectToSeg(u,a,b);
+      if(pr.dist<best){ best=pr.dist; s=nav.cum[i]+pr.t*(nav.cum[i+1]-nav.cum[i]); }
+    }
+    return s;
+  }
+
+  /* ---------- guidance banner ---------- */
+  let banner=null, navArrow=null;
+  function ensureBanner(){
+    if(banner) return;
+    banner=document.createElement('div');
+    banner.className='navbar hidden';
+    banner.innerHTML =
+      '<div class="nb-main">'+
+        '<div class="nb-arrow">⬆</div>'+
+        '<div class="nb-txt"><div class="nb-prim">Navigating…</div><div class="nb-dist"></div></div>'+
+        '<div class="nb-tools"><button id="nb-voice" title="Mute / unmute voice">🔊</button>'+
+        '<button id="nb-exit" title="Exit navigation">✕</button></div>'+
+      '</div>'+
+      '<div class="nb-sub"><span id="nb-remain"></span>'+
+        '<button id="nb-recalc" class="hidden">↻ Recalculate</button></div>';
+    document.body.appendChild(banner);
+    banner.querySelector('#nb-exit').addEventListener('click',stopNav);
+    banner.querySelector('#nb-recalc').addEventListener('click',recalc);
+    banner.querySelector('#nb-voice').addEventListener('click',e=>{
+      state.voice=!state.voice;
+      e.target.textContent=state.voice?'🔊':'🔇';
+      if(!state.voice){ try{speechSynthesis.cancel();}catch(err){} }
+    });
+  }
+  function setBanner(arrow,prim,dist,sub){
+    ensureBanner();
+    banner.querySelector('.nb-arrow').textContent=arrow;
+    banner.querySelector('.nb-prim').textContent=prim;
+    banner.querySelector('.nb-dist').textContent=dist||'';
+    if(sub!=null) banner.querySelector('#nb-remain').textContent=sub;
+  }
+  function showRecalc(on){
+    ensureBanner();
+    banner.querySelector('#nb-recalc').classList.toggle('hidden',!on);
+  }
+  function speak(t){
+    if(!state.voice || !('speechSynthesis' in window)) return;
+    try{ const u=new SpeechSynthesisUtterance(t); u.rate=1; speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){}
+  }
+  function updateArrow(u,brng){
+    const html='<div class="nav-cone" style="transform:rotate('+brng+'deg)">▲</div>';
+    const icon=L.divIcon({className:'nav-cone-wrap',html,iconSize:[28,28],iconAnchor:[14,14]});
+    if(!navArrow) navArrow=L.marker([u.lat,u.lng],{icon,zIndexOffset:1500,interactive:false}).addTo(map);
+    else { navArrow.setLatLng([u.lat,u.lng]); navArrow.setIcon(icon); }
+  }
+
+  /* ---------- start / stop / per-fix update ---------- */
+  function startNav(){
+    const lr=state.lastRoute;
+    if(!lr||!lr.r.ok){ alert('Compute a route first.'); return; }
+    if(!state.userLatLng){ alert('No GPS fix yet — wait for your location, then start.'); return; }
+    state.nav=buildNav(lr.ordered,lr.r,lr.mode);
+    ensureBanner(); banner.classList.remove('hidden','off'); showRecalc(false);
+    banner.querySelector('#nb-voice').textContent=state.voice?'🔊':'🔇';
+    map.setView([state.userLatLng.lat,state.userLatLng.lng],18);
+    speak('Starting navigation');
+    navUpdate(state.userLatLng);
+  }
+  function stopNav(){
+    state.nav=null;
+    if(banner) banner.classList.add('hidden');
+    if(navArrow){ map.removeLayer(navArrow); navArrow=null; }
+    try{speechSynthesis.cancel();}catch(e){}
+  }
+  function announce(m,d,mode){
+    const TH = mode==='drive'?{prep:170,now:30}:{prep:30,now:8};
+    if(!m.annPrep && d<=TH.prep){ m.annPrep=true; speak('In '+fmtD(d)+', '+manText(m).toLowerCase()); }
+    if(!m.annNow && d<=TH.now){ m.annNow=true; if(m.type!=='arrive') speak(manText(m)); }
+  }
+  function navUpdate(u){
+    const nav=state.nav; if(!nav||nav.arrived) return;
+    // snap to the route polyline
+    let best={dist:Infinity,s:0,seg:0};
+    for(let i=0;i<nav.path.length-1;i++){
+      const a={lat:nav.path[i][0],lng:nav.path[i][1]}, b={lat:nav.path[i+1][0],lng:nav.path[i+1][1]};
+      const pr=projectToSeg(u,a,b);
+      if(pr.dist<best.dist) best={dist:pr.dist,s:nav.cum[i]+pr.t*(nav.cum[i+1]-nav.cum[i]),seg:i};
+    }
+    const s=best.s, remain=Math.max(0,nav.total-s);
+
+    if(nav.follow) map.panTo([u.lat,u.lng],{animate:true,duration:.6});
+    updateArrow(u,bearing(nav.path[best.seg],nav.path[best.seg+1]));
+
+    // off-route detection (a few consecutive far fixes)
+    const OFF = nav.mode==='drive'?55:28;
+    if(best.dist>OFF) nav.off++; else nav.off=0;
+    if(nav.off>=3 && !nav.offState){ nav.offState=true; banner.classList.add('off'); showRecalc(true); speak('You appear to be off route'); }
+    else if(nav.off===0 && nav.offState){ nav.offState=false; banner.classList.remove('off'); showRecalc(false); }
+
+    // drop maneuvers already behind us
+    while(nav.midx<nav.mans.length && nav.mans[nav.midx].cum < s-5) nav.midx++;
+
+    // arrival
+    const ARR = nav.mode==='drive'?25:12;
+    if(remain<=ARR){
+      nav.arrived=true;
+      setBanner('🏁','You have arrived','','Arrived at '+nav.ordered[nav.ordered.length-1].label);
+      speak('You have arrived at '+nav.ordered[nav.ordered.length-1].label);
+      setTimeout(stopNav,5000);
+      return;
+    }
+
+    const sub=fmtD(remain)+' · '+fmtT(remain/SPEED[nav.mode])+' to go';
+    const m=nav.mans[nav.midx];
+    if(m){
+      const d=Math.max(0,m.cum-s);
+      setBanner(manArrow(m),manText(m),'in '+fmtD(d),sub);
+      announce(m,d,nav.mode);
+    } else {
+      setBanner('⬆','Continue to destination',fmtD(remain),sub);
+    }
+  }
+  function recalc(){
+    const nav=state.nav, u=state.userLatLng; if(!nav||!u) return;
+    const s=projectS(u,nav);
+    const rem=[];
+    for(let k=1;k<nav.ordered.length;k++) if(nav.stopCum[k]==null || nav.stopCum[k]>s-15) rem.push(nav.ordered[k]);
+    if(!rem.length) rem.push(nav.ordered[nav.ordered.length-1]);
+    const pts=[{lat:u.lat,lng:u.lng,label:'My location'},
+               ...rem.map(o=>({lat:o.lat,lng:o.lng,label:o.label}))];
+    const r=route(pts.map(p=>({lat:p.lat,lng:p.lng})),nav.mode,state.avoidDisc);
+    if(!r.ok){ setBanner('⚠','No route to remaining stops','',''); return; }
+    drawRoute(pts,r);
+    state.lastRoute={ordered:pts,r,mode:nav.mode};
+    state.nav=buildNav(pts,r,nav.mode);
+    banner.classList.remove('off'); showRecalc(false);
+    speak('Route recalculated'); navUpdate(u);
+  }
 
   // expose for any inline use
   window.NAV={ addStop };
