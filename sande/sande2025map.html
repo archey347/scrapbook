@@ -524,7 +524,7 @@ legend.addTo(map);
     $('nav-pick').classList.toggle('on',state.pick);
     map.getContainer().style.cursor = state.pick ? 'crosshair' : '';
   });
-  $('nav-clear').addEventListener('click',()=>{ routeLayer.clearLayers(); $('nav-res').innerHTML=''; });
+  $('nav-clear').addEventListener('click',()=>{ routeLayer.clearLayers(); $('nav-res').innerHTML=''; state.stops.length=0; state.pick=false; $('nav-pick').classList.remove('on'); map.getContainer().style.cursor=''; renderStops(); });
 
   // stops list
   function renderStops(){
@@ -544,7 +544,11 @@ legend.addTo(map);
     else if(a==='down'&&i<s.length-1) [s[i+1],s[i]]=[s[i],s[i+1]];
     renderStops();
   });
-  function addStop(lat,lng,label){ state.stops.push({lat,lng,label:label||('Pin '+lat.toFixed(4)+','+lng.toFixed(4))}); renderStops(); }
+  function addStop(lat,lng,label){
+    const last=state.stops[state.stops.length-1];
+    if(last && Math.abs(last.lat-lat)<1e-7 && Math.abs(last.lng-lng)<1e-7) return; // ignore back-to-back duplicate (loops elsewhere still allowed)
+    state.stops.push({lat,lng,label:label||('Pin '+lat.toFixed(4)+','+lng.toFixed(4))}); renderStops();
+  }
   renderStops();
 
   // add-as-stop buttons inside marker popups
