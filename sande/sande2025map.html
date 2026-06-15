@@ -906,7 +906,14 @@ legend.addTo(map);
       return;
     }
 
-    const sub=fmtD(remain)+' · '+fmtT(remain/SPEED[nav.mode])+' to go';
+    // what we're heading to right now: the next stop not yet reached
+    const last=nav.ordered.length-1; let tk=last;
+    for(let k=1;k<nav.ordered.length;k++){ if(nav.stopCum[k]==null || nav.stopCum[k]>s-5){ tk=k; break; } }
+    const spd=SPEED[nav.mode];
+    const dTarget=Math.max(0,(nav.stopCum[tk]!=null?nav.stopCum[tk]:nav.total)-s);
+    let sub='To '+nav.ordered[tk].label+' · '+fmtD(dTarget)+' · '+fmtT(dTarget/spd);
+    if(tk!==last) sub+='  (trip '+fmtD(remain)+')';
+
     const m=nav.mans[nav.midx];
     if(m){
       const d=Math.max(0,m.cum-s);
