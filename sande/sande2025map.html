@@ -483,8 +483,9 @@ legend.addTo(map);
 
   // Order stops to minimise total travel, keeping the first point (start)
   // and last point (end) fixed — only the intermediate stops are reordered.
-  // Uses real road-network distances (not straight-line) and refines the
-  // greedy nearest-neighbour tour with 2-opt local search.
+  // Uses real road-network distances (not straight-line). Small instances are
+  // solved exactly; larger ones use nearest-neighbour + 2-opt seeded so the
+  // result can never be worse than the order the user entered.
   function optimizeOrder(points,mode,avoidDisc){
     const n=points.length;
     if(n<=3) return points.slice(); // 0 or 1 intermediate stop: nothing to reorder
@@ -503,23 +504,44 @@ legend.addTo(map);
       }
     }
 
-    // greedy nearest-neighbour over the intermediate stops, starting at the
-    // fixed start (0); the fixed end (n-1) is appended afterwards.
-    const mid=[]; for(let i=1;i<n-1;i++) mid.push(i);
-    const order=[]; let cur=0;
-    while(mid.length){
-      let bi=0,bd=Infinity;
-      for(let k=0;k<mid.length;k++){ const d=D[cur][mid[k]]; if(d<bd){bd=d;bi=k;} }
-      cur=mid.splice(bi,1)[0]; order.push(cur);
-    }
-    const seq=[0,...order,n-1];
+    const mid=n-2; // number of reorderable (intermediate) stops
+    const tourLen=s=>{ let t=0; for(let k=0;k<s.length-1;k++) t+=D[s[k]][s[k+1]]; return t; };
 
+    // Exact search: the small stop counts this map is used with make a full
+    // permutation of the intermediate stops cheap and guarantees the optimum.
+    if(mid<=7){
+      const idx=[]; for(let i=1;i<n-1;i++) idx.push(i);
+      let best=null,bestLen=Infinity;
+      const perm=(arr,acc)=>{
+        if(!arr.length){
+          const seq=[0,...acc,n-1], len=tourLen(seq);
+          if(len<bestLen){ bestLen=len; best=seq; }
+          return;
+        }
+        for(let k=0;k<arr.length;k++) perm(arr.slice(0,k).concat(arr.slice(k+1)),[...acc,arr[k]]);
+      };
+      perm(idx,[]);
+      return best.map(i=>points[i]);
+    }
+
+    // greedy nearest-neighbour over the intermediate stops; `first` pins the
+    // first intermediate stop, giving cheap multi-start diversification.
+    const greedy=first=>{
+      const rem=[]; for(let i=1;i<n-1;i++) if(i!==first) rem.push(i);
+      const order=first?[first]:[]; let cur=first||0;
+      while(rem.length){
+        let bi=0,bd=Infinity;
+        for(let k=0;k<rem.length;k++){ const d=D[cur][rem[k]]; if(d<bd){bd=d;bi=k;} }
+        cur=rem.splice(bi,1)[0]; order.push(cur);
+      }
+      return [0,...order,n-1];
+    };
     // 2-opt: reverse interior sub-paths while the endpoints stay pinned
-    let improved=true;
-    while(improved){
-      improved=false;
-      for(let i=1;i<seq.length-2;i++){
-        for(let j=i+1;j<seq.length-1;j++){
+    const twoOpt=seq=>{
+      let improved=true;
+      while(improved){
+        improved=false;
+        for(let i=1;i<seq.length-2;i++) for(let j=i+1;j<seq.length-1;j++){
           const before=D[seq[i-1]][seq[i]]+D[seq[j]][seq[j+1]];
           const after =D[seq[i-1]][seq[j]]+D[seq[i]][seq[j+1]];
           if(after+1e-9<before){
@@ -528,8 +550,20 @@ legend.addTo(map);
           }
         }
       }
+      return seq;
+    };
+
+    // Seed 2-opt from the user's own order *and* nearest-neighbour starts, then
+    // keep the shortest. Including the input order guarantees we never return a
+    // longer route than the one the user already had.
+    const seeds=[ Array.from({length:n},(_,i)=>i) ];
+    for(let f=1;f<n-1;f++) seeds.push(greedy(f));
+    let best=null,bestLen=Infinity;
+    for(const s of seeds){
+      const seq=twoOpt(s.slice()), len=tourLen(seq);
+      if(len<bestLen){ bestLen=len; best=seq; }
     }
-    return seq.map(i=>points[i]);
+    return best.map(i=>points[i]);
   }
 
   /* ---------- formatting ---------- */
