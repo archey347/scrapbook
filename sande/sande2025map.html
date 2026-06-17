@@ -126,11 +126,16 @@
     display:flex; align-items:center; justify-content:space-between; gap:10px;
     padding:6px 14px; background:#27313d; font-size:13px;
   }
-  .nb-sub.hidden, #nb-recalc.hidden { display:none; }
+  .nb-sub.hidden, #nb-recalc.hidden, #nb-next.hidden { display:none; }
   #nb-recalc {
     background:#fff; color:#b71c1c; border:none; border-radius:7px;
     padding:5px 11px; font-weight:600; cursor:pointer; font-size:12.5px;
   }
+  #nb-next {
+    background:#2e7d32; color:#fff; border:none; border-radius:7px;
+    padding:6px 14px; font-weight:700; cursor:pointer; font-size:13px;
+  }
+  #nb-next:hover { background:#388e3c; }
   .nav-cone { color:#1976d2; font-size:22px; line-height:1; text-shadow:0 0 2px #fff,0 0 3px #fff; }
   .nav-cone-wrap { background:none; border:none; }
 
@@ -813,7 +818,8 @@ legend.addTo(map);
     mans.sort((a,b)=>a.cum-b.cum);
 
     return { path, cum, total, mans, ordered, stopCum, mode,
-             midx:0, off:0, offState:false, arrived:false, follow:true };
+             midx:0, off:0, offState:false, arrived:false, follow:true,
+             targetK:1, paused:false };
   }
 
   function manText(m){
@@ -859,10 +865,12 @@ legend.addTo(map);
         '<button id="nb-exit" title="Exit navigation">✕</button></div>'+
       '</div>'+
       '<div class="nb-sub"><span id="nb-remain"></span>'+
-        '<button id="nb-recalc" class="hidden">↻ Recalculate</button></div>';
+        '<button id="nb-recalc" class="hidden">↻ Recalculate</button>'+
+        '<button id="nb-next" class="hidden">Go to next →</button></div>';
     document.body.appendChild(banner);
     banner.querySelector('#nb-exit').addEventListener('click',stopNav);
     banner.querySelector('#nb-recalc').addEventListener('click',recalc);
+    banner.querySelector('#nb-next').addEventListener('click',goNext);
     banner.querySelector('#nb-voice').addEventListener('click',e=>{
       state.voice=!state.voice;
       e.target.textContent=state.voice?'🔊':'🔇';
@@ -879,6 +887,14 @@ legend.addTo(map);
   function showRecalc(on){
     ensureBanner();
     banner.querySelector('#nb-recalc').classList.toggle('hidden',!on);
+  }
+  // kind: 'next' (advance to next stop), 'finish' (end nav), or null (hide)
+  function showNext(kind){
+    ensureBanner();
+    const b=banner.querySelector('#nb-next');
+    if(!kind){ b.classList.add('hidden'); return; }
+    b.textContent = kind==='finish' ? '✓ Finish' : 'Go to next →';
+    b.classList.remove('hidden');
   }
   function speak(t){
     if(!state.voice || !('speechSynthesis' in window)) return;
@@ -897,7 +913,7 @@ legend.addTo(map);
     if(!lr||!lr.r.ok){ alert('Compute a route first.'); return; }
     if(!state.userLatLng){ alert('No GPS fix yet — wait for your location, then start.'); return; }
     state.nav=buildNav(lr.ordered,lr.r,lr.mode);
-    ensureBanner(); banner.classList.remove('hidden','off'); showRecalc(false);
+    ensureBanner(); banner.classList.remove('hidden','off'); showRecalc(false); showNext(null);
     banner.querySelector('#nb-voice').textContent=state.voice?'🔊':'🔇';
     const np=document.querySelector('.nav-panel'); if(np) np.style.display='none';
     map.setView([state.userLatLng.lat,state.userLatLng.lng],18);
@@ -907,7 +923,7 @@ legend.addTo(map);
   function stopNav(){
     state.nav=null;
     const np=document.querySelector('.nav-panel'); if(np) np.style.display='';
-    if(banner) banner.classList.add('hidden');
+    if(banner){ banner.classList.add('hidden'); showNext(null); showRecalc(false); }
     if(navArrow){ map.removeLayer(navArrow); navArrow=null; }
     try{speechSynthesis.cancel();}catch(e){}
   }
@@ -917,7 +933,7 @@ legend.addTo(map);
     if(!m.annNow && d<=TH.now){ m.annNow=true; if(m.type!=='arrive') speak(manText(m)); }
   }
   function navUpdate(u){
-    const nav=state.nav; if(!nav||nav.arrived) return;
+    const nav=state.nav; if(!nav||nav.arrived||nav.paused) return;
     // snap to the route polyline
     let best={dist:Infinity,s:0,seg:0};
     for(let i=0;i<nav.path.length-1;i++){
@@ -925,7 +941,12 @@ legend.addTo(map);
       const pr=projectToSeg(u,a,b);
       if(pr.dist<best.dist) best={dist:pr.dist,s:nav.cum[i]+pr.t*(nav.cum[i+1]-nav.cum[i]),seg:i};
     }
-    const s=best.s, remain=Math.max(0,nav.total-s);
+    const s=best.s;
+    const last=nav.ordered.length-1;
+    // we navigate to ONE stop at a time; only auto-advance turns, never stops
+    const targetCum = nav.stopCum[nav.targetK]!=null ? nav.stopCum[nav.targetK] : nav.total;
+    const remainTarget = Math.max(0,targetCum-s);
+    const remainTrip   = Math.max(0,nav.total-s);
 
     if(nav.follow) map.panTo([u.lat,u.lng],{animate:true,duration:.6});
     updateArrow(u,bearing(nav.path[best.seg],nav.path[best.seg+1]));
@@ -939,32 +960,51 @@ legend.addTo(map);
     // drop maneuvers already behind us
     while(nav.midx<nav.mans.length && nav.mans[nav.midx].cum < s-5) nav.midx++;
 
-    // arrival
+    // arrival at the CURRENT target stop — pause here, don't roll onto the next
     const ARR = nav.mode==='drive'?25:12;
-    if(remain<=ARR){
-      nav.arrived=true;
-      setBanner('🏁','You have arrived','','Arrived at '+nav.ordered[nav.ordered.length-1].label);
-      speak('You have arrived at '+nav.ordered[nav.ordered.length-1].label);
-      setTimeout(stopNav,5000);
-      return;
-    }
+    if(remainTarget<=ARR){ arrivedAtTarget(); return; }
 
-    // what we're heading to right now: the next stop not yet reached
-    const last=nav.ordered.length-1; let tk=last;
-    for(let k=1;k<nav.ordered.length;k++){ if(nav.stopCum[k]==null || nav.stopCum[k]>s-5){ tk=k; break; } }
+    // sub line: distance / time to the current target
     const spd=SPEED[nav.mode];
-    const dTarget=Math.max(0,(nav.stopCum[tk]!=null?nav.stopCum[tk]:nav.total)-s);
-    let sub='To '+nav.ordered[tk].label+' · '+fmtD(dTarget)+' · '+fmtT(dTarget/spd);
-    if(tk!==last) sub+='  (trip '+fmtD(remain)+')';
+    let sub='To '+nav.ordered[nav.targetK].label+' · '+fmtD(remainTarget)+' · '+fmtT(remainTarget/spd);
+    if(nav.targetK!==last) sub+='  (stop '+nav.targetK+' of '+last+' · trip '+fmtD(remainTrip)+')';
 
-    const m=nav.mans[nav.midx];
+    // next maneuver — but ignore any that belong to a later leg (past this target)
+    let m=nav.mans[nav.midx];
+    if(m && m.cum > targetCum+5) m=null;
     if(m){
       const d=Math.max(0,m.cum-s);
       setBanner(manArrow(m),manText(m),'in '+fmtD(d),sub);
       announce(m,d,nav.mode);
     } else {
-      setBanner('⬆','Continue to destination',fmtD(remain),sub);
+      setBanner('⬆','Continue to '+nav.ordered[nav.targetK].label,fmtD(remainTarget),sub);
     }
+  }
+  // reached the stop we were heading to: hold here until the user chooses to go on
+  function arrivedAtTarget(){
+    const nav=state.nav, last=nav.ordered.length-1;
+    const label=nav.ordered[nav.targetK].label;
+    nav.paused=true;
+    banner.classList.remove('off'); showRecalc(false);
+    speak('You have arrived at '+label);
+    if(nav.targetK>=last){
+      nav.arrived=true;
+      setBanner('🏁','You have arrived','','Arrived at '+label);
+      showNext('finish');
+    } else {
+      setBanner('🏁','Arrived at '+label,'','Next stop: '+nav.ordered[nav.targetK+1].label);
+      showNext('next');
+    }
+  }
+  // advance to the next stop (or finish if that was the last one)
+  function goNext(){
+    const nav=state.nav; if(!nav) return;
+    const last=nav.ordered.length-1;
+    if(nav.targetK>=last){ stopNav(); return; }
+    nav.targetK++; nav.paused=false; nav.arrived=false;
+    showNext(null);
+    speak('Continuing to '+nav.ordered[nav.targetK].label);
+    if(state.userLatLng) navUpdate(state.userLatLng);
   }
   function recalc(){
     const nav=state.nav, u=state.userLatLng; if(!nav||!u) return;
