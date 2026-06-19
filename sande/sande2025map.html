@@ -182,10 +182,23 @@
 
   /* declutter: hide the always-on point labels until zoomed in */
   body.hide-labels .wp-label, body.hide-labels .evo-label { display:none; }
+
+  /* ---- Centre on me floating button (bottom right) ---- */
+  #btn-centre-me {
+    position:fixed; z-index:900;
+    bottom:calc(env(safe-area-inset-bottom, 0px) + 16px); right:16px;
+    width:44px; height:44px; border-radius:50%;
+    background:#fff; border:none; box-shadow:0 2px 8px rgba(0,0,0,.3);
+    font-size:20px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+    transition:background .15s;
+  }
+  #btn-centre-me:hover { background:#eef1f6; }
+  #btn-centre-me:active { background:#dde3f0; }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<button id="btn-centre-me" title="Centre on me">🎯</button>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 const EVO = {"name":"Evolution","checkpoints":[{"name":"A","kind":"Hub","lat":51.7327065,"lng":-2.0465437,"color":"#0f9d58"},{"name":"B","kind":"Hub","lat":51.7235613,"lng":-2.049001,"color":"#0f9d58"},{"name":"C2","kind":"Base","lat":51.7309025,"lng":-2.0469618,"color":"#a61b4a"},{"name":"C3","kind":"Base","lat":51.73074,"lng":-2.049755,"color":"#a61b4a"},{"name":"C4","kind":"Base","lat":51.7296367,"lng":-2.0450253,"color":"#a61b4a"},{"name":"C5","kind":"Base","lat":51.7288857,"lng":-2.0475143,"color":"#a61b4a"},{"name":"C6","kind":"Base","lat":51.7271712,"lng":-2.0480079,"color":"#a61b4a"},{"name":"C7","kind":"Base","lat":51.727793,"lng":-2.050101,"color":"#a61b4a"},{"name":"C8","kind":"Base","lat":51.7280055,"lng":-2.0519967,"color":"#a61b4a"},{"name":"C10","kind":"Base","lat":51.731538,"lng":-2.05371,"color":"#a61b4a"},{"name":"C9","kind":"Base","lat":51.7260685,"lng":-2.0509194,"color":"#a61b4a"},{"name":"B10","kind":"Base","lat":51.7229848,"lng":-2.0519708,"color":"#a61b4a"},{"name":"B9","kind":"Base","lat":51.7212634,"lng":-2.0509408,"color":"#a61b4a"},{"name":"B8","kind":"Base","lat":51.7201103,"lng":-2.0522766,"color":"#a61b4a"},{"name":"B7","kind":"Base","lat":51.7201133,"lng":-2.0498123,"color":"#a61b4a"},{"name":"B6","kind":"Base","lat":51.719473,"lng":-2.04733,"color":"#a61b4a"},{"name":"B5","kind":"Base","lat":51.7222235,"lng":-2.0478972,"color":"#a61b4a"},{"name":"B4","kind":"Base","lat":51.7226256,"lng":-2.0470604,"color":"#a61b4a"},{"name":"B3","kind":"Base","lat":51.722366,"lng":-2.042401,"color":"#a61b4a"},{"name":"B2","kind":"Base","lat":51.7242876,"lng":-2.0462903,"color":"#a61b4a"}],"bounds":[{"desc":"Bounds","coords":[[51.7282524,-2.0524092],[51.7283189,-2.0518191]]},{"desc":"Bounds","coords":[[51.7207926,-2.0444707],[51.7205467,-2.044814]]},{"desc":"Bounds","coords":[[51.7193137,-2.0469168],[51.7192007,-2.047346]]},{"desc":"Bounds","coords":[[51.7327411,-2.0456714],[51.7320205,-2.0449238],[51.7295632,-2.0446915],[51.7274707,-2.0472254],[51.7247136,-2.0461329],[51.7223432,-2.0419593],[51.722053,-2.042533],[51.7218427,-2.0470456],[51.7194136,-2.0466511],[51.7189251,-2.0470373],[51.7194202,-2.0499877],[51.7196576,-2.0528692],[51.7229917,-2.0524248],[51.7241932,-2.0503785],[51.7282524,-2.0524092],[51.7318298,-2.0540787],[51.7311392,-2.0494031],[51.7330468,-2.0466801],[51.7327411,-2.0456714]]}]};
@@ -769,7 +782,6 @@ document.body.appendChild(searchCard);
       '<ul class="stops" id="nav-stops"></ul>'+
       '<div class="nav-acts">'+
         '<button id="nav-pick">📍 Pin on map</button>'+
-        '<button id="nav-me">🎯 Centre on me</button>'+
       '</div>'+
       '<div class="nav-acts">'+
         '<button id="nav-go">Route</button>'+
@@ -789,7 +801,7 @@ document.body.appendChild(searchCard);
   $('nav-avoid').addEventListener('change',e=>state.avoidDisc=e.target.checked);
   $('nav-startme').addEventListener('change',e=>state.startAtMe=e.target.checked);
   $('nav-opt').addEventListener('change',e=>state.optimize=e.target.checked);
-  $('nav-me').addEventListener('click',()=>{
+  document.getElementById('btn-centre-me').addEventListener('click',()=>{
     if(state.userLatLng) map.setView([state.userLatLng.lat,state.userLatLng.lng],17);
     else onLocErr();
   });
