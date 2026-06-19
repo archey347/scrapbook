@@ -195,6 +195,27 @@
   }
   #btn-centre-me:hover { background:#eef1f6; }
   #btn-centre-me:active { background:#dde3f0; }
+
+  /* ---- Centre-pin placement mode ---- */
+  #pin-picker { position:fixed; inset:0; z-index:850; pointer-events:none; display:none; }
+  #pin-picker.on { display:block; }
+  #pin-picker .pp-pin {
+    position:absolute; transform:translate(-50%,-100%);
+    pointer-events:none; filter:drop-shadow(0 2px 3px rgba(0,0,0,.4));
+  }
+  #pin-picker .pp-bar {
+    position:fixed; left:50%; transform:translateX(-50%);
+    bottom:calc(env(safe-area-inset-bottom, 0px) + 16px);
+    display:flex; align-items:center; gap:8px; pointer-events:auto;
+    background:#fff; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,.3);
+    padding:8px 10px; font-size:13px; max-width:92vw;
+  }
+  #pin-picker .pp-hint { color:#556; flex:1 1 auto; }
+  #pin-picker .pp-bar button {
+    padding:8px 14px; border-radius:8px; border:1px solid #cfd6e4;
+    background:#f6f8fc; cursor:pointer; font-size:13px; font-weight:600; flex:0 0 auto;
+  }
+  #pin-picker #pp-ok { background:#1a9850; color:#fff; border-color:#1a9850; }
 </style>
 </head>
 <body>
@@ -806,12 +827,62 @@ document.body.appendChild(searchCard);
     if(state.userLatLng) map.setView([state.userLatLng.lat,state.userLatLng.lng],17);
     else onLocErr();
   });
-  $('nav-pick').addEventListener('click',()=>{
-    state.pick=!state.pick;
-    $('nav-pick').classList.toggle('on',state.pick);
-    map.getContainer().style.cursor = state.pick ? 'crosshair' : '';
+  /* ---------- centre-pin placement overlay ----------
+     Instead of tapping a spot, the user enables pick mode, drags the
+     MAP so the fixed centre pin sits over the target, then taps OK.
+     The pin rests in the middle of the map area that is NOT covered by
+     the search/route card at the top. */
+  const pinPicker=document.createElement('div');
+  pinPicker.id='pin-picker';
+  pinPicker.innerHTML=
+    '<div class="pp-pin">'+
+      '<svg width="34" height="44" viewBox="0 0 24 32" aria-hidden="true">'+
+        '<path d="M12 0C5.4 0 0 5.4 0 12c0 9 12 20 12 20s12-11 12-20C24 5.4 18.6 0 12 0z" fill="#2962ff" stroke="#fff" stroke-width="2"/>'+
+        '<circle cx="12" cy="12" r="4" fill="#fff"/>'+
+      '</svg>'+
+    '</div>'+
+    '<div class="pp-bar">'+
+      '<span class="pp-hint">Drag the map to place the pin</span>'+
+      '<button id="pp-cancel">Cancel</button>'+
+      '<button id="pp-ok">OK</button>'+
+    '</div>';
+  document.body.appendChild(pinPicker);
+  const pinEl=pinPicker.querySelector('.pp-pin');
+
+  // screen point where the pin tip rests: horizontal centre, and the
+  // vertical centre of the map area below the (fixed) search card.
+  function pinPoint(){
+    const card=document.querySelector('.map-search');
+    let top=0;
+    if(card && !card.classList.contains('hidden')){
+      const r=card.getBoundingClientRect();
+      if(r.height) top=r.bottom;
+    }
+    return { x:window.innerWidth/2, y:top+(window.innerHeight-top)/2 };
+  }
+  function placePin(){
+    const p=pinPoint();
+    pinEl.style.left=p.x+'px';
+    pinEl.style.top =p.y+'px';
+  }
+  function setPickMode(on){
+    state.pick=on;
+    pinPicker.classList.toggle('on',on);
+    $('nav-pick').classList.toggle('on',on);
+    if(on) placePin();
+  }
+  $('nav-pick').addEventListener('click',()=>setPickMode(!state.pick));
+  $('pp-cancel').addEventListener('click',()=>setPickMode(false));
+  $('pp-ok').addEventListener('click',()=>{
+    const p=pinPoint();
+    const rect=map.getContainer().getBoundingClientRect();
+    const ll=map.containerPointToLatLng([p.x-rect.left, p.y-rect.top]);
+    addStop(ll.lat,ll.lng,'Dropped pin');
+    setPickMode(false);
   });
-  $('nav-clear').addEventListener('click',()=>{ stopNav(); routeLayer.clearLayers(); $('nav-res').innerHTML=''; state.stops.length=0; state.lastRoute=null; state.pick=false; $('nav-pick').classList.remove('on'); map.getContainer().style.cursor=''; renderStops(); const card=document.querySelector('.map-search'); if(card) card.classList.remove('show-route'); });
+  window.addEventListener('resize',()=>{ if(state.pick) placePin(); });
+
+  $('nav-clear').addEventListener('click',()=>{ stopNav(); routeLayer.clearLayers(); $('nav-res').innerHTML=''; state.stops.length=0; state.lastRoute=null; setPickMode(false); renderStops(); const card=document.querySelector('.map-search'); if(card) card.classList.remove('show-route'); });
 
   // stops list
   function renderStops(){
@@ -843,12 +914,6 @@ document.body.appendChild(searchCard);
   map.on('popupopen',e=>{
     const btn=e.popup._contentNode && e.popup._contentNode.querySelector('.add-stop-btn');
     if(btn) btn.addEventListener('click',()=>{ addStop(+btn.dataset.lat,+btn.dataset.lng,btn.dataset.name); map.closePopup(); });
-  });
-  // pin-on-map
-  map.on('click',e=>{
-    if(!state.pick) return;
-    addStop(e.latlng.lat,e.latlng.lng,'Dropped pin');
-    state.pick=false; $('nav-pick').classList.remove('on'); map.getContainer().style.cursor='';
   });
 
   // numbered badge
