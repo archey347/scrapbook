@@ -139,6 +139,32 @@
     font-size:12px; display:flex; align-items:center; justify-content:center;
     border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.3);
   }
+
+  /* ---- Search box ---- */
+  .map-search {
+    background:#fff; border-radius:10px; box-shadow:0 1px 6px rgba(0,0,0,.35);
+    width:230px; max-width:72vw; overflow:hidden; font-size:13px;
+  }
+  .ms-row { display:flex; align-items:center; gap:6px; padding:7px 9px; }
+  .ms-row .ms-ico { font-size:14px; opacity:.65; flex:0 0 auto; }
+  #ms-input { flex:1; border:none; outline:none; font-size:14px; min-width:0; background:transparent; }
+  .ms-clear { border:none; background:transparent; cursor:pointer; font-size:14px; color:#778; padding:2px 4px; line-height:1; flex:0 0 auto; }
+  .ms-clear:hover { color:#000; }
+  .ms-results { list-style:none; margin:0; padding:0; max-height:46vh; overflow-y:auto; }
+  .ms-results:empty { display:none; }
+  .ms-results:not(:empty) { border-top:1px solid #eef0f4; }
+  .ms-results li {
+    display:flex; align-items:center; gap:8px; padding:7px 10px; cursor:pointer;
+    border-top:1px solid #f2f4f8;
+  }
+  .ms-results li:first-child { border-top:none; }
+  .ms-results li.active, .ms-results li:hover { background:#eef4ff; }
+  .ms-results .ms-dot { width:11px; height:11px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.3); flex:0 0 auto; }
+  .ms-results .ms-nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ms-results .ms-sub { color:#889; font-size:11px; flex:0 0 auto; }
+  .ms-results .ms-add { border:none; background:transparent; cursor:pointer; font-size:14px; color:#1a9850; padding:2px 4px; line-height:1; flex:0 0 auto; }
+  .ms-results .ms-none { color:#889; font-style:italic; cursor:default; padding:8px 10px; }
+  .ms-results .ms-none:hover { background:none; }
 </style>
 </head>
 <body>
@@ -163,6 +189,8 @@ const PATH_STYLE = {
 
 const pathsLayer = L.layerGroup();
 const allLatLngs = [];
+// Index of every named point so the search box can find & jump to it.
+const searchIndex = [];
 
 DATA.paths.forEach(p => {
   if (!p.coords || p.coords.length < 2) return;
@@ -189,7 +217,7 @@ DATA.groups.forEach(g => {
   g.waypoints.forEach(w => {
     allLatLngs.push([w.lat, w.lng]);
     const isHub = /HUB/i.test(w.name);
-    L.circleMarker([w.lat, w.lng], {
+    const m = L.circleMarker([w.lat, w.lng], {
       radius: isHub ? 8 : 6,
       color: '#fff', weight: 2,
       fillColor: color, fillOpacity: 1
@@ -199,6 +227,7 @@ DATA.groups.forEach(g => {
       permanent:true, direction:'right', className:'wp-label', offset:[8,0]
     })
     .addTo(wpLayer);
+    searchIndex.push({ name:w.name, sub:g.name, lat:w.lat, lng:w.lng, color, marker:m, group:wpLayer, cb:'leg-strategy' });
   });
 });
 wpLayer.addTo(map);
@@ -216,7 +245,7 @@ EVO.bounds.forEach(b => {
 EVO.checkpoints.forEach(c => {
   allLatLngs.push([c.lat, c.lng]);
   const isHub = c.kind === 'Hub';
-  L.circleMarker([c.lat, c.lng], {
+  const m = L.circleMarker([c.lat, c.lng], {
     radius: isHub ? 8 : 6,
     color: '#fff', weight: 2,
     fillColor: c.color, fillOpacity: 1
@@ -224,6 +253,7 @@ EVO.checkpoints.forEach(c => {
     .bindPopup(`<b>Evo ${c.name}</b><br/>${c.kind}<br/>${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}<br/><button class="add-stop-btn" data-lat="${c.lat}" data-lng="${c.lng}" data-name="Evo ${c.name}">➕ Add as stop</button>`)
     .bindTooltip(c.name, { permanent:true, direction:'left', className:'evo-label', offset:[-10,0] })
     .addTo(evoLayer);
+  searchIndex.push({ name:'Evo '+c.name, sub:c.kind, lat:c.lat, lng:c.lng, color:c.color, marker:m, group:evoLayer, cb:'leg-evo' });
 });
 evoLayer.addTo(map);
 
@@ -234,7 +264,7 @@ const CAMPSITE = [
 ];
 CAMPSITE.forEach(c => {
   allLatLngs.push([c.lat, c.lng]);
-  L.marker([c.lat, c.lng], {
+  const m = L.marker([c.lat, c.lng], {
     icon: L.divIcon({
       className:'campsite-icon',
       html:'<div style="font-size:22px;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))">⛺</div>',
@@ -243,6 +273,7 @@ CAMPSITE.forEach(c => {
   })
   .bindPopup(`<b>${c.name}</b><br/>${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}<br/><button class="add-stop-btn" data-lat="${c.lat}" data-lng="${c.lng}" data-name="${c.name}">➕ Add as stop</button>`)
   .addTo(campsiteLayer);
+  searchIndex.push({ name:c.name, sub:'Campsite', lat:c.lat, lng:c.lng, color:'#37474f', icon:'⛺', marker:m, group:campsiteLayer, cb:'leg-campsite' });
 });
 campsiteLayer.addTo(map);
 
@@ -319,6 +350,95 @@ legend.onAdd = function() {
   return div;
 };
 legend.addTo(map);
+
+/* ============================================================
+   Search box — type a point name (B7, A1 HUB, Evo C5, Campsite)
+   to fly to it and open its popup. Adds straight from the list too.
+   ============================================================ */
+const search = L.control({ position:'topleft' });
+search.onAdd = function(){
+  const div = L.DomUtil.create('div', 'map-search');
+  L.DomEvent.disableClickPropagation(div);
+  L.DomEvent.disableScrollPropagation(div);
+  div.innerHTML =
+    '<div class="ms-row">'+
+      '<span class="ms-ico">🔍</span>'+
+      '<input id="ms-input" type="search" autocomplete="off" '+
+        'placeholder="Find a point (B7, HUB, Evo C5…)" aria-label="Search map points"/>'+
+      '<button id="ms-clear" class="ms-clear" title="Clear" aria-label="Clear search" hidden>✕</button>'+
+    '</div>'+
+    '<ul id="ms-results" class="ms-results" role="listbox"></ul>';
+  return div;
+};
+search.addTo(map);
+
+(function(){
+  const input = document.getElementById('ms-input');
+  const list  = document.getElementById('ms-results');
+  const clr   = document.getElementById('ms-clear');
+  let matches = [], active = -1;
+
+  // Bring a point into view: make sure its layer is on, then fly + open popup.
+  function focusEntry(e){
+    if(!map.hasLayer(e.group)){
+      e.group.addTo(map);
+      const cb = document.getElementById(e.cb); if(cb) cb.checked = true;
+    }
+    map.setView([e.lat, e.lng], 18);
+    e.marker.openPopup();
+  }
+
+  function render(){
+    if(!matches.length){ list.innerHTML = ''; return; }
+    list.innerHTML = matches.map((m, i) => {
+      const mark = m.icon
+        ? '<span style="font-size:13px;line-height:1">'+m.icon+'</span>'
+        : '<span class="ms-dot" style="background:'+m.color+'"></span>';
+      return '<li role="option" data-i="'+m._i+'" class="'+(i===active?'active':'')+'">'+
+        mark+'<span class="ms-nm">'+m.name+'</span>'+
+        '<span class="ms-sub">'+m.sub+'</span>'+
+        '<button class="ms-add" data-i="'+m._i+'" title="Add as stop" aria-label="Add as stop">➕</button>'+
+        '</li>';
+    }).join('');
+  }
+
+  function run(raw){
+    const q = (raw || '').trim().toLowerCase();
+    clr.hidden = !q;
+    if(!q){ matches = []; active = -1; render(); return; }
+    const qs = q.replace(/\s+/g, '');
+    matches = searchIndex
+      .map((e, i) => Object.assign({ _i:i }, e))
+      .filter(e => {
+        const hay = (e.name + ' ' + e.sub).toLowerCase();
+        return hay.includes(q) || hay.replace(/\s+/g, '').includes(qs);
+      })
+      .slice(0, 8);
+    active = matches.length ? 0 : -1;
+    if(!matches.length) list.innerHTML = '<li class="ms-none">No matching points</li>';
+    else render();
+  }
+
+  input.addEventListener('input', e => run(e.target.value));
+  input.addEventListener('keydown', e => {
+    if(e.key === 'ArrowDown'){ e.preventDefault(); if(matches.length){ active = (active + 1) % matches.length; render(); } }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); if(matches.length){ active = (active - 1 + matches.length) % matches.length; render(); } }
+    else if(e.key === 'Enter'){ e.preventDefault(); if(active >= 0 && matches[active]){ focusEntry(searchIndex[matches[active]._i]); input.blur(); } }
+    else if(e.key === 'Escape'){ input.value = ''; run(''); input.blur(); }
+  });
+  list.addEventListener('click', e => {
+    const add = e.target.closest('.ms-add');
+    if(add){
+      e.stopPropagation();
+      const en = searchIndex[+add.dataset.i];
+      if(window.NAV) window.NAV.addStop(en.lat, en.lng, en.name);
+      return;
+    }
+    const li = e.target.closest('li[data-i]');
+    if(li) focusEntry(searchIndex[+li.dataset.i]);
+  });
+  clr.addEventListener('click', () => { input.value = ''; run(''); input.focus(); });
+})();
 
 /* ============================================================
    Live location + satnav-style routing over the road network
