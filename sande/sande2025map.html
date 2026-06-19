@@ -158,9 +158,10 @@
   }
   .ms-clear { font-size:14px; color:#778; padding:4px; }
   .ms-clear:hover { color:#000; }
-  .ms-dir { font-size:16px; width:32px; height:32px; border-radius:50%; }
+  .ms-dir { padding:2px; width:32px; height:32px; border-radius:8px; }
+  .ms-dir img { display:block; width:28px; height:28px; border-radius:6px; }
   .ms-dir:hover { background:#eef1f6; }
-  .map-search.show-route .ms-dir { background:#2962ff; }
+  .map-search.show-route .ms-dir { background:transparent; outline:2px solid #2962ff; outline-offset:-2px; }
   .ms-results { list-style:none; margin:0; padding:0; max-height:46vh; overflow-y:auto; }
   .ms-results:empty { display:none; }
   .ms-results:not(:empty) { border-top:1px solid #eef0f4; }
@@ -389,7 +390,7 @@ searchCard.innerHTML =
     '<input id="ms-input" type="search" autocomplete="off" '+
       'placeholder="Search a point, or plan a route…" aria-label="Search map points"/>'+
     '<button id="ms-clear" class="ms-clear" title="Clear" aria-label="Clear search" hidden>✕</button>'+
-    '<button id="ms-dir" class="ms-dir" title="Directions" aria-label="Directions">🧭</button>'+
+    '<button id="ms-dir" class="ms-dir" title="Directions" aria-label="Directions"><img src="icon-192.png" alt="Directions"/></button>'+
   '</div>'+
   '<ul id="ms-results" class="ms-results" role="listbox"></ul>'+
   '<div id="ms-route" class="ms-route"></div>';
