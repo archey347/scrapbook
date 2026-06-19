@@ -937,7 +937,7 @@ document.body.appendChild(searchCard);
     const r = route(ordered.map(p=>({lat:p.lat,lng:p.lng})), state.mode, state.avoidDisc);
 
     const all=drawRoute(ordered,r);
-    if(all.length) map.fitBounds(L.latLngBounds(all),{padding:[40,40]});
+    if(all.length) map.fitBounds(L.latLngBounds(all),routeFitOpts());
     state.lastRoute={ordered,r,mode:state.mode};
 
     // results
@@ -974,6 +974,19 @@ document.body.appendChild(searchCard);
     const y=Math.sin(dl)*Math.cos(la2);
     const x=Math.cos(la1)*Math.sin(la2)-Math.sin(la1)*Math.cos(la2)*Math.cos(dl);
     return (Math.atan2(y,x)*180/Math.PI+360)%360;
+  }
+
+  // fitBounds options that keep the route clear of the search/route card,
+  // which is fixed over the top of the map (otherwise the route can hide
+  // behind the card — see the directions screenshot).
+  function routeFitOpts(){
+    const card=document.querySelector('.map-search');
+    let top=40;
+    if(card && !card.classList.contains('hidden')){
+      const cr=card.getBoundingClientRect();
+      if(cr.height) top=cr.bottom+16;
+    }
+    return { paddingTopLeft:[40,top], paddingBottomRight:[40,56] };
   }
 
   // draw a computed route onto routeLayer; returns all coords for fitBounds
@@ -1107,6 +1120,66 @@ document.body.appendChild(searchCard);
     else { navArrow.setLatLng([u.lat,u.lng]); navArrow.setIcon(icon); }
   }
 
+  /* ---------- satnav heading-up rotation ----------
+     Leaflet 1.9 has no native map bearing, so while navigating we rotate the
+     map container itself with a CSS transform so the direction of travel is
+     "up". To stop the rotation revealing empty corners the container is grown
+     to a centred square the size of the viewport diagonal (tiles then fill it
+     after invalidateSize). The Leaflet control layer (legend, attribution) is
+     pinned back to the upright viewport rect and given the equal-and-opposite
+     rotation about the same centre, so only the map + route turn while the
+     controls stay put and the right way up. Exiting restores north-up. */
+  let satnavOn=false, mapRotation=0;
+  function satnavMetrics(){
+    const w=window.innerWidth, h=window.innerHeight;
+    const D=Math.ceil(Math.sqrt(w*w+h*h));
+    return { D, mx:(D-w)/2, my:(D-h)/2 };
+  }
+  function layoutSatnav(){
+    const el=map.getContainer(), cc=el.querySelector('.leaflet-control-container');
+    const {D,mx,my}=satnavMetrics();
+    el.style.width=el.style.height=D+'px';
+    el.style.left=(-mx)+'px'; el.style.top=(-my)+'px';
+    el.style.right='auto'; el.style.bottom='auto';
+    el.style.transformOrigin='50% 50%';
+    if(cc){
+      cc.style.position='absolute';
+      cc.style.top=cc.style.bottom=my+'px';
+      cc.style.left=cc.style.right=mx+'px';
+      cc.style.transformOrigin='50% 50%';
+    }
+    map.invalidateSize({animate:false});
+  }
+  function applyRotation(deg){
+    mapRotation=deg;
+    if(!satnavOn) return;
+    const el=map.getContainer(), cc=el.querySelector('.leaflet-control-container');
+    el.style.transform='rotate('+deg+'deg)';
+    if(cc) cc.style.transform='rotate('+(-deg)+'deg)';
+  }
+  function enterSatnav(){
+    if(satnavOn) return;
+    satnavOn=true;
+    map.getContainer().style.transition='transform .5s ease-out';
+    layoutSatnav();
+    applyRotation(mapRotation);
+  }
+  function exitSatnav(){
+    if(!satnavOn) return;
+    satnavOn=false; mapRotation=0;
+    const el=map.getContainer(), cc=el.querySelector('.leaflet-control-container');
+    el.style.transform=''; el.style.transition='';
+    el.style.width=el.style.height='';
+    el.style.left=el.style.top=el.style.right=el.style.bottom='';
+    el.style.transformOrigin='';
+    if(cc){
+      cc.style.position=''; cc.style.transform=''; cc.style.transformOrigin='';
+      cc.style.top=cc.style.bottom=cc.style.left=cc.style.right='';
+    }
+    map.invalidateSize({animate:false});
+  }
+  window.addEventListener('resize',()=>{ if(satnavOn){ layoutSatnav(); applyRotation(mapRotation); } });
+
   /* ---------- start / stop / per-fix update ---------- */
   function startNav(){
     const lr=state.lastRoute;
@@ -1116,12 +1189,14 @@ document.body.appendChild(searchCard);
     ensureBanner(); banner.classList.remove('hidden','off'); showRecalc(false);
     banner.querySelector('#nb-voice').textContent=state.voice?'🔊':'🔇';
     const np=document.querySelector('.map-search'); if(np) np.classList.add('hidden');
+    enterSatnav();                 // rotate map so direction of travel is up
     map.setView([state.userLatLng.lat,state.userLatLng.lng],18);
     speak('Starting navigation');
     navUpdate(state.userLatLng);
   }
   function stopNav(){
     state.nav=null;
+    exitSatnav();                  // restore the default north-up orientation
     const np=document.querySelector('.map-search'); if(np) np.classList.remove('hidden');
     if(banner) banner.classList.add('hidden');
     if(navArrow){ map.removeLayer(navArrow); navArrow=null; }
@@ -1144,7 +1219,12 @@ document.body.appendChild(searchCard);
     const s=best.s, remain=Math.max(0,nav.total-s);
 
     if(nav.follow) map.panTo([u.lat,u.lng],{animate:true,duration:.6});
-    updateArrow(u,bearing(nav.path[best.seg],nav.path[best.seg+1]));
+    const travB=bearing(nav.path[best.seg],nav.path[best.seg+1]);
+    updateArrow(u,travB);
+    // rotate the whole map so the direction of travel points up; the cone is
+    // drawn at travB inside the map pane, which the -travB rotation cancels,
+    // leaving the position arrow pointing straight up on screen.
+    if(satnavOn) applyRotation(-travB);
 
     // off-route detection (a few consecutive far fixes)
     const OFF = nav.mode==='drive'?55:28;
