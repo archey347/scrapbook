@@ -1,0 +1,4 @@
+AuthType Basic
+AuthName "S&E 2025"
+AuthUserFile /home/archey347/public_html/scrapbook/sande/.htpasswd
+Require valid-user
