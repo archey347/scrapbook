@@ -72,7 +72,7 @@
   }
   .seg button.active { background:#2962ff; color:#fff; border-color:#2962ff; }
   .nav-bd label.ck { display:flex; align-items:center; gap:7px; cursor:pointer; }
-  .stops { list-style:none; margin:6px 0 0; padding:0; }
+  .stops { list-style:none; margin:6px 0 0; padding:0; max-height:160px; overflow-y:auto; }
   .stops li {
     display:flex; align-items:center; gap:6px; padding:5px 6px; margin:4px 0;
     background:#f3f5f9; border-radius:7px;
@@ -773,7 +773,7 @@ document.body.appendChild(searchCard);
       '</div>'+
       '<div class="nav-acts">'+
         '<button id="nav-go">Route</button>'+
-        '<button id="nav-clear">Clear</button>'+
+        '<button id="nav-clear">Cancel</button>'+
       '</div>'+
       '<div class="nav-res" id="nav-res"></div>'+
     '</div>';
@@ -798,7 +798,7 @@ document.body.appendChild(searchCard);
     $('nav-pick').classList.toggle('on',state.pick);
     map.getContainer().style.cursor = state.pick ? 'crosshair' : '';
   });
-  $('nav-clear').addEventListener('click',()=>{ stopNav(); routeLayer.clearLayers(); $('nav-res').innerHTML=''; state.stops.length=0; state.lastRoute=null; state.pick=false; $('nav-pick').classList.remove('on'); map.getContainer().style.cursor=''; renderStops(); });
+  $('nav-clear').addEventListener('click',()=>{ stopNav(); routeLayer.clearLayers(); $('nav-res').innerHTML=''; state.stops.length=0; state.lastRoute=null; state.pick=false; $('nav-pick').classList.remove('on'); map.getContainer().style.cursor=''; renderStops(); const card=document.querySelector('.map-search'); if(card) card.classList.remove('show-route'); });
 
   // stops list
   function renderStops(){
