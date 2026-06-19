@@ -131,6 +131,11 @@
     background:#fff; color:#b71c1c; border:none; border-radius:7px;
     padding:5px 11px; font-weight:600; cursor:pointer; font-size:12.5px;
   }
+  #nb-cancel {
+    background:rgba(255,255,255,.15); color:#fff; border:1px solid rgba(255,255,255,.3);
+    border-radius:7px; padding:5px 11px; font-weight:600; cursor:pointer; font-size:12.5px;
+  }
+  #nb-cancel:hover { background:rgba(255,255,255,.28); }
   .nav-cone { color:#1976d2; font-size:22px; line-height:1; text-shadow:0 0 2px #fff,0 0 3px #fff; }
   .nav-cone-wrap { background:none; border:none; }
 
@@ -1088,9 +1093,12 @@ document.body.appendChild(searchCard);
         '<button id="nb-exit" title="Exit navigation">✕</button></div>'+
       '</div>'+
       '<div class="nb-sub"><span id="nb-remain"></span>'+
-        '<button id="nb-recalc" class="hidden">↻ Recalculate</button></div>';
+        '<div style="display:flex;gap:6px">'+
+        '<button id="nb-recalc" class="hidden">↻ Recalculate</button>'+
+        '<button id="nb-cancel">✕ Cancel navigation</button></div></div>';
     document.body.appendChild(banner);
     banner.querySelector('#nb-exit').addEventListener('click',stopNav);
+    banner.querySelector('#nb-cancel').addEventListener('click',stopNav);
     banner.querySelector('#nb-recalc').addEventListener('click',recalc);
     banner.querySelector('#nb-voice').addEventListener('click',e=>{
       state.voice=!state.voice;
