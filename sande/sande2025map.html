@@ -122,6 +122,9 @@
     width:38px; height:38px; font-size:17px; cursor:pointer;
   }
   .nb-tools button:hover { background:rgba(255,255,255,.30); }
+  /* the ✕ in the top bar cancels navigation — tinted red so it reads as "stop" */
+  .nb-tools #nb-exit { background:rgba(229,57,53,.32); font-weight:700; }
+  .nb-tools #nb-exit:hover { background:rgba(229,57,53,.6); }
   .nb-sub {
     display:flex; align-items:center; justify-content:space-between; gap:10px;
     padding:6px 14px; background:#27313d; font-size:13px;
@@ -200,6 +203,14 @@
   }
   #btn-centre-me:hover { background:#eef1f6; }
   #btn-centre-me:active { background:#dde3f0; }
+  /* while navigating, if the user has dragged the map away from their
+     position the button turns blue + pulses to invite "track me again". */
+  #btn-centre-me.tracking-paused { background:#2962ff; color:#fff; animation:trackpulse 1.6s ease-in-out infinite; }
+  #btn-centre-me.tracking-paused:hover { background:#1e54e6; }
+  @keyframes trackpulse {
+    0%,100% { box-shadow:0 2px 8px rgba(0,0,0,.3); }
+    50%     { box-shadow:0 0 0 7px rgba(41,98,255,.22), 0 2px 8px rgba(0,0,0,.3); }
+  }
 
   /* ---- Centre-pin placement mode ---- */
   #pin-picker { position:fixed; inset:0; z-index:850; pointer-events:none; display:none; }
@@ -884,9 +895,27 @@ document.body.appendChild(searchCard);
   $('nav-avoid').addEventListener('change',e=>state.avoidDisc=e.target.checked);
   $('nav-startme').addEventListener('change',e=>state.startAtMe=e.target.checked);
   $('nav-opt').addEventListener('change',e=>state.optimize=e.target.checked);
-  document.getElementById('btn-centre-me').addEventListener('click',()=>{
-    if(state.userLatLng) map.setView([state.userLatLng.lat,state.userLatLng.lng],17);
-    else onLocErr();
+  const centreBtn=document.getElementById('btn-centre-me');
+  // Reflect "are we auto-following the user during navigation?" on the button:
+  // when paused, it lights up blue/pulses to invite "track me again".
+  function setFollow(on){
+    if(state.nav) state.nav.follow=on;
+    centreBtn.classList.toggle('tracking-paused', !!state.nav && !on);
+    centreBtn.title = (!!state.nav && !on) ? 'Resume tracking me' : 'Centre on me';
+  }
+  // A manual drag while navigating frees the map: stop auto-panning so the user
+  // can look around. The button then offers to re-engage tracking.
+  map.on('dragstart',()=>{ if(state.nav && state.nav.follow) setFollow(false); });
+  centreBtn.addEventListener('click',()=>{
+    if(!state.userLatLng){ onLocErr(); return; }
+    if(state.nav){
+      // resume turn-by-turn following and snap back to the user
+      setFollow(true);
+      map.setView([state.userLatLng.lat,state.userLatLng.lng],18);
+      navUpdate(state.userLatLng);
+    } else {
+      map.setView([state.userLatLng.lat,state.userLatLng.lng],17);
+    }
   });
   /* ---------- centre-pin placement overlay ----------
      Instead of tapping a spot, the user enables pick mode, drags the
@@ -1146,7 +1175,7 @@ document.body.appendChild(searchCard);
         '<div class="nb-arrow">⬆</div>'+
         '<div class="nb-txt"><div class="nb-prim">Navigating…</div><div class="nb-dist"></div></div>'+
         '<div class="nb-tools"><button id="nb-voice" title="Mute / unmute voice">🔊</button>'+
-        '<button id="nb-exit" title="Exit navigation">✕</button></div>'+
+        '<button id="nb-exit" title="Cancel navigation">✕</button></div>'+
       '</div>'+
       '<div class="nb-sub"><span id="nb-remain"></span>'+
         '<div style="display:flex;gap:6px">'+
@@ -1250,6 +1279,7 @@ document.body.appendChild(searchCard);
     if(!lr||!lr.r.ok){ alert('Compute a route first.'); return; }
     if(!state.userLatLng){ alert('No GPS fix yet — wait for your location, then start.'); return; }
     state.nav=buildNav(lr.ordered,lr.r,lr.mode);
+    setFollow(true);               // start following; reset the recenter button
     ensureBanner(); banner.classList.remove('hidden','off'); showRecalc(false);
     banner.querySelector('#nb-voice').textContent=state.voice?'🔊':'🔇';
     const np=document.querySelector('.map-search'); if(np) np.classList.add('hidden');
@@ -1260,6 +1290,7 @@ document.body.appendChild(searchCard);
   }
   function stopNav(){
     state.nav=null;
+    centreBtn.classList.remove('tracking-paused'); centreBtn.title='Centre on me';
     exitSatnav();                  // restore the default north-up orientation
     const np=document.querySelector('.map-search'); if(np) np.classList.remove('hidden');
     if(banner) banner.classList.add('hidden');
@@ -1287,8 +1318,9 @@ document.body.appendChild(searchCard);
     updateArrow(u,travB);
     // rotate the whole map so the direction of travel points up; the cone is
     // drawn at travB inside the map pane, which the -travB rotation cancels,
-    // leaving the position arrow pointing straight up on screen.
-    if(satnavOn) applyRotation(-travB);
+    // leaving the position arrow pointing straight up on screen. While the user
+    // has dragged away (follow off) we hold the view still so they can look around.
+    if(satnavOn && nav.follow) applyRotation(-travB);
 
     // off-route detection (a few consecutive far fixes)
     const OFF = nav.mode==='drive'?55:28;
