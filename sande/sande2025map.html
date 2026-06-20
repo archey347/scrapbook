@@ -539,7 +539,7 @@ document.body.appendChild(searchCard);
 
   /* ---------- build routable graph from DATA.paths ---------- */
   const nodes=[], adj=[], edges=[], grid=new Map();
-  const CELL=0.00008, SNAP=6; // ~grid cell & 6 m merge threshold
+  const CELL=0.00008, SNAP=6, JUNCT=5; // grid cell, 6 m vertex merge, 5 m junction snap
   function getNode(lat,lng){
     const ci=Math.floor(lat/CELL), cj=Math.floor(lng/CELL);
     let best=-1, bestD=SNAP;
@@ -563,15 +563,71 @@ document.body.appendChild(searchCard);
     adj[b].push({to:a,dist:d,drive,disc});
     edges.push({a,b,drive,disc});
   }
+  // The source tracks come from a Google My Maps export, where two lines only
+  // share a point if they happen to have a vertex at the exact same spot. Where
+  // one ride crosses another mid-segment, or a side track meets a ride partway
+  // along it, the lines never shared a node — so the router had to detour all
+  // the way to the nearest common endpoint, producing big out-and-back loops.
+  // Node (planarise) the network first: split every segment wherever another
+  // segment crosses it or meets its interior, so the rides connect where they
+  // physically touch and become one routable network.
+  const raw=[];
   DATA.paths.forEach(p=>{
     if(p.polygon || !p.coords || p.coords.length<2) return; // skip area outlines
     const disc  = p.category==='discretion';
     const drive = p.drive===true && p.category!=='do-not-drive';
-    let prev=getNode(p.coords[0][0],p.coords[0][1]);
-    for(let i=1;i<p.coords.length;i++){
-      const cur=getNode(p.coords[i][0],p.coords[i][1]);
-      addEdge(prev,cur,drive,disc); prev=cur;
+    for(let i=1;i<p.coords.length;i++)
+      raw.push({ a:p.coords[i-1], b:p.coords[i], drive, disc });
+  });
+
+  // local equirectangular projection (metres) for the intersection maths
+  const latRef = raw.length ? raw[0].a[0] : 51, D2R = Math.PI/180;
+  const MLAT = 111320, MLNG = 111320*Math.cos(latRef*D2R);
+  const px = c => [ c[1]*MLNG, c[0]*MLAT ];
+  const lerp = (seg,t) => [ seg.a[0]+t*(seg.b[0]-seg.a[0]), seg.a[1]+t*(seg.b[1]-seg.a[1]) ];
+  const splits = raw.map(()=>[]); // interior split points {t, c:[lat,lng]} per segment
+  const addSplit = (i,t,c) => { if(t>1e-4 && t<1-1e-4) splits[i].push({t,c}); };
+  // project metre-point p onto metre-segment m1..m2; record a split where a
+  // vertex of one track meets the interior of another within JUNCT metres.
+  const tjunc = (i,seg,m1,m2,p) => {
+    const bx=m2[0]-m1[0], by=m2[1]-m1[1], len2=bx*bx+by*by;
+    if(len2<1e-6) return;
+    const t=((p[0]-m1[0])*bx+(p[1]-m1[1])*by)/len2;
+    if(t<=1e-4 || t>=1-1e-4) return;
+    const dx=(m1[0]+t*bx)-p[0], dy=(m1[1]+t*by)-p[1];
+    if(dx*dx+dy*dy > JUNCT*JUNCT) return;
+    addSplit(i,t,lerp(seg,t));
+  };
+  for(let i=0;i<raw.length;i++){
+    const a1=px(raw[i].a), a2=px(raw[i].b);
+    for(let j=i+1;j<raw.length;j++){
+      const b1=px(raw[j].a), b2=px(raw[j].b);
+      const rx=a2[0]-a1[0], ry=a2[1]-a1[1], sx=b2[0]-b1[0], sy=b2[1]-b1[1];
+      const den=rx*sy-ry*sx;
+      if(Math.abs(den)>1e-9){
+        const t=((b1[0]-a1[0])*sy-(b1[1]-a1[1])*sx)/den;
+        const u=((b1[0]-a1[0])*ry-(b1[1]-a1[1])*rx)/den;
+        if(t>1e-4 && t<1-1e-4 && u>1e-4 && u<1-1e-4){ // proper crossing
+          const c=lerp(raw[i],t);
+          addSplit(i,t,c); addSplit(j,u,c);
+          continue;
+        }
+      }
+      // otherwise look for a T-junction (endpoint of one on the other's interior)
+      tjunc(i,raw[i],a1,a2,b1); tjunc(i,raw[i],a1,a2,b2);
+      tjunc(j,raw[j],b1,b2,a1); tjunc(j,raw[j],b1,b2,a2);
     }
+  }
+  // emit each track as a chain through its (sorted) split points; getNode merges
+  // coincident crossing points and nearby junction points into shared nodes.
+  raw.forEach((seg,i)=>{
+    const stops=splits[i].slice().sort((x,y)=>x.t-y.t);
+    let prev=getNode(seg.a[0],seg.a[1]);
+    for(const sp of stops){
+      const cur=getNode(sp.c[0],sp.c[1]);
+      addEdge(prev,cur,seg.drive,seg.disc); prev=cur;
+    }
+    addEdge(prev,getNode(seg.b[0],seg.b[1]),seg.drive,seg.disc);
   });
 
   const allow=(e,mode,avoidDisc)=>
