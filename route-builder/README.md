@@ -2,8 +2,15 @@
 
 Generates a closed walking route that **starts and finishes at the Church of
 the Ascension, Oldfield Park**, sticks to real roads, fits a chosen walk
-budget (default ~1.5 h), and traces out a recognisable **shape** (tent, house,
-tree, star, heart, or an imported SVG).
+budget (default ~1.5 h), and traces out a recognisable **shape** — `cross`,
+`heart`, `star`, `house`, `diamond`, `square`, `arrow`, `tent`, `tree`,
+`bolt`, or an imported SVG.
+
+Shapes are drawn boldly: the outline is **densified** before routing (extra
+waypoints every ~110 m) so diagonal and curved edges trace as staircases that
+actually read, instead of being short-cut into boxes. The placement search
+scores each candidate on a **symmetric** shape-match (stray + coverage), a
+length-budget term, an upright preference, and a detour penalty.
 
 There are two front-ends sharing one engine:
 
