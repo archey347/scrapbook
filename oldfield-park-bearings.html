@@ -281,6 +281,18 @@
   }
   .route-marker.start { background: #2e7d32; }
   .route-marker.sel { outline: 3px solid #ffb300; }
+  /* Non-bearing "via" points: small hollow dot, no number */
+  .route-marker.via {
+    background: #fff;
+    color: transparent;
+    border: 2px solid #888;
+    width: 13px;
+    height: 13px;
+    line-height: 9px;
+    font-size: 0;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  }
+  .route-marker.via.sel { outline: 3px solid #ffb300; }
 
   /* Leg labels drawn on the map */
   .leg-label {
@@ -305,11 +317,15 @@
 <div class="builder no-print">
   <header>Bearing Compass — Route Builder</header>
   <div class="hint">
-    <b>Click the map</b> to drop route points. <b>Drag</b> a point to move it.
-    Click a point (or a row) to select; <b>Delete</b> removes the selected one.
+    <b>Click the map</b> to drop route points. <b>Bearing points</b> (numbered)
+    are stations where you take a compass bearing; <b>non-bearing points</b>
+    (small dots) just bend the line around the road — no bearing taken there.
+    <b>Drag</b> to move, click to select, <b>Delete</b> to remove.
   </div>
   <div class="controls">
     <button id="btn-add" class="primary">Add points: ON</button>
+    <button id="btn-kind">New point: Bearing</button>
+    <button id="btn-toggle">Toggle type</button>
     <button id="btn-del">Delete selected</button>
     <button id="btn-undo">Undo last</button>
     <button id="btn-clear" class="danger">Clear all</button>
@@ -568,10 +584,13 @@
   // Bearing-compass route builder
   // =================================================================
 
-  // points: ordered list of { marker, latlng }
+  // points: ordered list of { marker, latlng, bearing }
+  //   bearing === true  -> a numbered station where a compass bearing is taken
+  //   bearing === false -> a "via" point that only bends the line round the road
   const points = [];
   let selectedIdx = -1;
   let addMode = true;
+  let addKind = 'bearing';   // type given to the next point added by clicking
 
   const routeLine = L.polyline([], {
     color: '#1976d2', weight: 3, opacity: 0.85, dashArray: '6 4'
@@ -618,26 +637,32 @@
   }
 
   // --- marker creation -------------------------------------------
-  function makeIcon(index, total) {
+  // Bearing points show their station number (the first is the green start
+  // "S"); non-bearing "via" points show as a small unnumbered dot. `label`
+  // is the station number to print, or '' for a via point.
+  function makeIcon(index, label) {
+    const via = !points[index].bearing;
     const cls = 'route-marker' +
-      (index === 0 ? ' start' : '') +
+      (via ? ' via' : '') +
+      (!via && index === 0 ? ' start' : '') +
       (index === selectedIdx ? ' sel' : '');
+    const size = via ? 13 : 22;
     return L.divIcon({
       className: '',
-      html: `<div class="${cls}">${index + 1}</div>`,
-      iconSize: [22, 22],
-      iconAnchor: [11, 11]
+      html: `<div class="${cls}">${label}</div>`,
+      iconSize: [size, size],
+      iconAnchor: [size / 2, size / 2]
     });
   }
 
   function addPoint(latlng) {
+    const entry = { marker: null, latlng, bearing: addKind === 'bearing' };
     const marker = L.marker(latlng, {
       draggable: true,
-      icon: makeIcon(points.length, points.length + 1),
+      icon: L.divIcon({ className: '', html: '', iconSize: [22, 22] }),
       keyboard: false
     }).addTo(map);
-
-    const entry = { marker, latlng };
+    entry.marker = marker;
     points.push(entry);
 
     marker.on('drag', () => {
@@ -675,32 +700,60 @@
   }
 
   // --- compute legs ----------------------------------------------
+  // A leg runs from one bearing point to the next bearing point. Its bearing
+  // is the initial heading (toward the very next point, which may be a via
+  // point); its distance is the whole path walked, summing the segments
+  // through any intervening via points. Via points create no leg of their own.
   function legs() {
     const out = [];
-    for (let i = 1; i < points.length; i++) {
-      const a = points[i-1].latlng, b = points[i].latlng;
-      out.push({ bearing: bearingDeg(a, b), distance: distanceM(a, b) });
+    let from = -1;     // index of the open bearing point
+    let acc = 0;       // path distance accumulated since `from`
+    for (let i = 0; i < points.length; i++) {
+      if (i > 0) acc += distanceM(points[i-1].latlng, points[i].latlng);
+      if (points[i].bearing) {
+        if (from >= 0) {
+          const heading = bearingDeg(points[from].latlng, points[from+1].latlng);
+          out.push({ bearing: heading, distance: acc, from, to: i });
+        }
+        from = i;
+        acc = 0;
+      }
     }
     return out;
   }
 
+  // Total distance walked along the whole line (every segment, all points).
+  function totalDistance() {
+    let s = 0;
+    for (let i = 1; i < points.length; i++)
+      s += distanceM(points[i-1].latlng, points[i].latlng);
+    return s;
+  }
+
   // --- render -----------------------------------------------------
   function refresh(full = true) {
-    // polyline
+    // polyline through every point (bearing + via), in order
     routeLine.setLatLngs(points.map(p => p.latlng));
 
-    // marker icons (numbers + selection state)
-    points.forEach((p, i) => p.marker.setIcon(makeIcon(i, points.length)));
+    // marker icons: number the bearing points (first = start "S"), leave via
+    // points as small unnumbered dots.
+    let station = 0;
+    points.forEach((p, i) => {
+      let label = '';
+      if (p.bearing) label = (i === 0) ? 'S' : String(station);
+      if (p.bearing) station++;
+      p.marker.setIcon(makeIcon(i, label));
+    });
 
     const lg = legs();
 
-    // map leg labels
+    // map leg labels — one per bearing leg, at the midpoint between its two
+    // bearing points
     labelLayer.clearLayers();
     if (optLabels.checked) {
-      for (let i = 1; i < points.length; i++) {
-        const a = points[i-1].latlng, b = points[i].latlng;
+      lg.forEach((leg) => {
+        const a = points[leg.from].latlng, b = points[leg.to].latlng;
         const mid = L.latLng((a.lat + b.lat) / 2, (a.lng + b.lng) / 2);
-        const leg = lg[i-1];
         L.marker(mid, {
           interactive: false,
           icon: L.divIcon({
@@ -709,32 +762,32 @@
             iconSize: [0, 0]
           })
         }).addTo(labelLayer);
-      }
+      });
     }
 
-    // table
+    // table — one row per bearing leg
     legsBody.innerHTML = '';
     if (lg.length === 0) {
       const tr = document.createElement('tr');
       tr.className = 'empty';
       tr.innerHTML = `<td colspan="4">${points.length === 0
         ? 'Click the map to add the start point.'
-        : 'Add another point to create a leg.'}</td>`;
+        : 'Add another bearing point to create a leg.'}</td>`;
       legsBody.appendChild(tr);
     } else {
       lg.forEach((leg, i) => {
         const tr = document.createElement('tr');
-        // leg i goes from point i to point i+1; highlight if either end selected
-        if (selectedIdx === i || selectedIdx === i + 1) tr.className = 'sel';
+        // highlight if either end of this leg is the selected point
+        if (selectedIdx === leg.from || selectedIdx === leg.to) tr.className = 'sel';
         tr.innerHTML =
           `<td>${i + 1}</td>` +
           `<td>${fmtBearing(leg.bearing)}</td>` +
           `<td class="num">${fmtDist(leg.distance)}</td>` +
-          `<td><span class="leg-del" title="Delete point ${i + 2}" data-pt="${i + 1}">✕</span></td>`;
+          `<td><span class="leg-del" title="Delete this bearing point" data-pt="${leg.to}">✕</span></td>`;
         tr.addEventListener('click', (e) => {
           if (e.target.classList.contains('leg-del')) return;
-          selectIdx(i + 1);
-          map.panTo(points[i + 1].latlng);
+          selectIdx(leg.to);
+          map.panTo(points[leg.to].latlng);
         });
         legsBody.appendChild(tr);
       });
@@ -747,10 +800,12 @@
     }
 
     // totals
-    const totalDist = lg.reduce((s, l) => s + l.distance, 0);
+    const nBearing = points.filter(p => p.bearing).length;
+    const nVia = points.length - nBearing;
     el('total-legs').textContent =
-      `${lg.length} leg${lg.length === 1 ? '' : 's'} · ${points.length} pt`;
-    el('total-dist').textContent = `${fmtDist(totalDist)} total`;
+      `${lg.length} leg${lg.length === 1 ? '' : 's'} · ${nBearing} bearing` +
+      (nVia ? ` · ${nVia} via` : '');
+    el('total-dist').textContent = `${fmtDist(totalDistance())} total`;
   }
 
   // --- text output ------------------------------------------------
@@ -768,6 +823,16 @@
     addMode = !addMode;
     el('btn-add').textContent = 'Add points: ' + (addMode ? 'ON' : 'OFF');
     el('btn-add').classList.toggle('primary', addMode);
+  });
+  el('btn-kind').addEventListener('click', () => {
+    addKind = (addKind === 'bearing') ? 'via' : 'bearing';
+    el('btn-kind').textContent =
+      'New point: ' + (addKind === 'bearing' ? 'Bearing' : 'Non-bearing');
+  });
+  el('btn-toggle').addEventListener('click', () => {
+    if (selectedIdx < 0 || selectedIdx >= points.length) return;
+    points[selectedIdx].bearing = !points[selectedIdx].bearing;
+    refresh();
   });
   el('btn-del').addEventListener('click', () => deleteIdx(selectedIdx));
   el('btn-undo').addEventListener('click', () => deleteIdx(points.length - 1));
