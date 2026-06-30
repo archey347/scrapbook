@@ -5,7 +5,20 @@ the Ascension, Oldfield Park**, sticks to real roads, fits a chosen walk
 budget (default ~1.5 h), and traces out a recognisable **shape** (tent, house,
 tree, star, heart, or an imported SVG).
 
-It pairs with the on-screen builder (`../oldfield-park-bearings.html`) — the
+There are two front-ends sharing one engine:
+
+- **`../oldfield-park-shape-route.html`** — *the main one.* A browser page (a
+  copy of the Oldfield Park map) that downloads the streets and runs the whole
+  search **client-side**, so it works on the static web server with no backend.
+  Open it, pick shapes, hit **Generate**, then print to A4. It needs internet
+  (it fetches OpenStreetMap from your browser).
+- **`build_route.py`** — a command-line version of the same pipeline, for
+  generating files offline/in batch. Documented below.
+- **`route-engine.js`** — the shared, DOM-free engine (graph build, snapping,
+  Dijkstra, placement search, scoring, simplify-to-legs). Loaded by the page;
+  also runnable in Node for testing.
+
+It also pairs with the manual builder (`../oldfield-park-bearings.html`) — the
 generator produces a course automatically; the builder lets you tweak by hand.
 
 ## How it works

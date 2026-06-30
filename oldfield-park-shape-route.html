@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Oldfield Park, Bath — Shape Route Generator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""/>
+<style>
+  @page { size: A4 portrait; margin: 10mm; }
+  html, body { margin:0; padding:0; background:#ddd;
+    font-family:"Helvetica Neue",Arial,sans-serif; color:#111; }
+  body { display:flex; justify-content:center; padding:12px; }
+  .sheet { width:190mm; height:277mm; background:#fff; box-sizing:border-box;
+    position:relative; box-shadow:0 2px 14px rgba(0,0,0,.18);
+    display:flex; flex-direction:column; }
+  @media print { html,body{background:#fff;padding:0;}
+    .sheet{box-shadow:none;width:190mm;height:277mm;} .no-print{display:none!important;} }
+  .header { text-align:center; padding:2mm 0 1mm; border-bottom:.4mm solid #222; }
+  .header h1 { font-size:14pt; margin:0; letter-spacing:.04em; text-transform:uppercase; }
+  .header .sub { font-size:8pt; color:#444; margin-top:.5mm; }
+  .map-block { --gutter:7mm; position:relative; width:190mm; height:170mm; margin:4mm 0 0 0; }
+  .map-frame { position:absolute; top:var(--gutter); left:var(--gutter);
+    width:calc(100% - 2*var(--gutter)); height:calc(100% - 2*var(--gutter));
+    border:.4mm solid #111; overflow:hidden; background:#f7f4ec; }
+  #map { width:100%; height:100%; }
+  .grid-overlay { position:absolute; inset:0; pointer-events:none; width:100%; height:100%; z-index:800; }
+  .axis { position:absolute; color:#111; font-size:8.5pt; font-weight:600;
+    pointer-events:none; font-variant-numeric:tabular-nums; }
+  .axis-x-top,.axis-x-bot { left:var(--gutter); width:calc(100% - 2*var(--gutter)); height:var(--gutter); }
+  .axis-x-top{top:0;} .axis-x-bot{bottom:0;}
+  .axis-y-left,.axis-y-right { top:var(--gutter); height:calc(100% - 2*var(--gutter)); width:var(--gutter); }
+  .axis-y-left{left:0;} .axis-y-right{right:0;}
+  .axis .lbl { position:absolute; line-height:1; }
+  .axis-x-top .lbl{bottom:1mm;transform:translateX(-50%);}
+  .axis-x-bot .lbl{top:1mm;transform:translateX(-50%);}
+  .axis-y-left .lbl{right:1mm;transform:translateY(-50%);}
+  .axis-y-right .lbl{left:1mm;transform:translateY(-50%);}
+  .footer { padding:2mm 4mm; font-size:7.5pt; color:#333;
+    display:flex; justify-content:space-between; border-top:.4mm solid #222; }
+  .directions { padding:2mm 6mm 3mm; font-size:8.5pt; column-count:3; column-gap:8mm;
+    font-variant-numeric:tabular-nums; min-height:8mm; }
+  .directions h2 { font-size:9pt; margin:0 0 1mm; column-span:all;
+    border-bottom:.3mm solid #999; padding-bottom:1mm; }
+  .directions ol { margin:0; padding-left:7mm; }
+  .directions li { margin:.4mm 0; break-inside:avoid; }
+  .route-marker { background:#1565c0; color:#fff; border:2px solid #fff;
+    border-radius:50%; width:18px; height:18px; line-height:14px; text-align:center;
+    font-size:9px; font-weight:700; box-shadow:0 1px 2px rgba(0,0,0,.4); }
+  .route-marker.startpt { background:#2e7d32; width:24px; height:24px; line-height:20px; font-size:10px; }
+  .leg-label { background:rgba(255,255,255,.85); border:1px solid #1565c0;
+    border-radius:3px; padding:0 3px; font-size:8.5px; font-weight:700;
+    color:#0d2f57; white-space:nowrap; font-variant-numeric:tabular-nums; }
+
+  /* ---- control panel ---- */
+  .panel { position:fixed; top:12px; right:12px; width:280px; background:#fff;
+    border:1px solid #aaa; border-radius:8px; font-size:12px; line-height:1.4;
+    box-shadow:0 2px 10px rgba(0,0,0,.2); z-index:1000;
+    max-height:calc(100vh - 24px); overflow-y:auto; }
+  .panel header { padding:10px 12px; border-bottom:1px solid #ddd; font-weight:700; }
+  .panel .body { padding:10px 12px; display:flex; flex-direction:column; gap:9px; }
+  .panel label { display:block; font-size:11px; color:#444; margin-bottom:2px; }
+  .panel input[type=text], .panel input[type=number], .panel select {
+    width:100%; box-sizing:border-box; padding:4px 6px; font-size:12px;
+    border:1px solid #bbb; border-radius:4px; }
+  .panel .row { display:flex; gap:8px; }
+  .panel .row > div { flex:1; }
+  .shapes { display:flex; flex-wrap:wrap; gap:4px 10px; }
+  .shapes label { display:flex; align-items:center; gap:4px; font-size:12px; color:#222; cursor:pointer; }
+  .panel button { padding:7px 10px; cursor:pointer; border:1px solid #1565c0;
+    border-radius:5px; background:#1976d2; color:#fff; font-size:12px; font-weight:600; }
+  .panel button.sec { background:#f4f4f4; color:#222; border-color:#999; font-weight:500; }
+  .panel button:disabled { opacity:.5; cursor:default; }
+  .status { font-size:11px; color:#555; min-height:1.4em; }
+  .status.err { color:#b00; }
+  .bar { height:5px; background:#eee; border-radius:3px; overflow:hidden; }
+  .bar > div { height:100%; width:0; background:#1976d2; transition:width .1s; }
+  .result { font-size:11px; color:#333; border-top:1px solid #eee; padding-top:8px; }
+  .result b { color:#111; }
+  .hint { font-size:10.5px; color:#777; }
+  @media print { .leaflet-control-container{display:none;} }
+</style>
+</head>
+<body>
+
+<div class="panel no-print">
+  <header>Shape Route Generator</header>
+  <div class="body">
+    <div class="hint">Generates a road-following loop from the church that traces a
+      shape, sized for your walk budget. Needs internet (downloads OpenStreetMap
+      streets in your browser).</div>
+
+    <div>
+      <label>Start / finish (church) — lat,lng</label>
+      <input id="church" type="text" value="51.374094,-2.382752">
+    </div>
+
+    <div>
+      <label>Shapes to try (ticks &gt; 1 = iterate &amp; keep closest match)</label>
+      <div class="shapes" id="shapes">
+        <label><input type="checkbox" value="tent"> tent</label>
+        <label><input type="checkbox" value="house" checked> house</label>
+        <label><input type="checkbox" value="tree" checked> tree</label>
+        <label><input type="checkbox" value="star"> star</label>
+        <label><input type="checkbox" value="heart"> heart</label>
+      </div>
+    </div>
+
+    <div class="row">
+      <div><label>Minutes</label><input id="minutes" type="number" value="90" min="20" step="5"></div>
+      <div><label>Pace km/h</label><input id="pace" type="number" value="4.6" step="0.1"></div>
+    </div>
+    <div class="row">
+      <div><label>Max reach (m)</label><input id="maxr" type="number" value="1100" step="50"></div>
+      <div><label>Shape vs length</label>
+        <select id="lenw">
+          <option value="0.5">looser length</option>
+          <option value="1" selected>balanced</option>
+          <option value="2">tighter length</option>
+        </select>
+      </div>
+    </div>
+    <div><label><input type="checkbox" id="round5"> round bearings to 5°</label></div>
+
+    <button id="gen">Generate route</button>
+    <button id="refetch" class="sec" title="Re-download the street network">Re-download streets</button>
+
+    <div class="bar"><div id="prog"></div></div>
+    <div class="status" id="status">Ready. Pick shapes and hit Generate.</div>
+
+    <div class="result" id="result" style="display:none"></div>
+    <button id="copy" class="sec" style="display:none">Copy directions</button>
+  </div>
+</div>
+
+<div class="sheet">
+  <div class="header">
+    <h1>Oldfield Park, Bath — Compass Course</h1>
+    <div class="sub" id="subtitle">Generate a route to draw a shape on the streets · start &amp; finish at the Church of the Ascension</div>
+  </div>
+  <div class="map-block">
+    <div class="map-frame">
+      <div id="map"></div>
+      <svg class="grid-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+        <g stroke="#000" stroke-opacity="0.45" stroke-width="1" fill="none" vector-effect="non-scaling-stroke">
+          <line x1="100" y1="0" x2="100" y2="1000"/><line x1="200" y1="0" x2="200" y2="1000"/>
+          <line x1="300" y1="0" x2="300" y2="1000"/><line x1="400" y1="0" x2="400" y2="1000"/>
+          <line x1="500" y1="0" x2="500" y2="1000"/><line x1="600" y1="0" x2="600" y2="1000"/>
+          <line x1="700" y1="0" x2="700" y2="1000"/><line x1="800" y1="0" x2="800" y2="1000"/>
+          <line x1="900" y1="0" x2="900" y2="1000"/>
+          <line y1="100" x1="0" y2="100" x2="1000"/><line y1="200" x1="0" y2="200" x2="1000"/>
+          <line y1="300" x1="0" y2="300" x2="1000"/><line y1="400" x1="0" y2="400" x2="1000"/>
+          <line y1="500" x1="0" y2="500" x2="1000"/><line y1="600" x1="0" y2="600" x2="1000"/>
+          <line y1="700" x1="0" y2="700" x2="1000"/><line y1="800" x1="0" y2="800" x2="1000"/>
+          <line y1="900" x1="0" y2="900" x2="1000"/>
+        </g>
+        <g stroke="#c00" stroke-width="1.6" fill="none" vector-effect="non-scaling-stroke">
+          <line x1="490" y1="500" x2="510" y2="500"/><line x1="500" y1="490" x2="500" y2="510"/>
+          <circle cx="500" cy="500" r="3" fill="#c00" stroke="none"/>
+        </g>
+      </svg>
+    </div>
+    <div class="axis axis-x-top"><div class="lbl" style="left:10%">1</div><div class="lbl" style="left:20%">2</div><div class="lbl" style="left:30%">3</div><div class="lbl" style="left:40%">4</div><div class="lbl" style="left:50%">5</div><div class="lbl" style="left:60%">6</div><div class="lbl" style="left:70%">7</div><div class="lbl" style="left:80%">8</div><div class="lbl" style="left:90%">9</div></div>
+    <div class="axis axis-x-bot"><div class="lbl" style="left:10%">1</div><div class="lbl" style="left:20%">2</div><div class="lbl" style="left:30%">3</div><div class="lbl" style="left:40%">4</div><div class="lbl" style="left:50%">5</div><div class="lbl" style="left:60%">6</div><div class="lbl" style="left:70%">7</div><div class="lbl" style="left:80%">8</div><div class="lbl" style="left:90%">9</div></div>
+    <div class="axis axis-y-left"><div class="lbl" style="top:90%">1</div><div class="lbl" style="top:80%">2</div><div class="lbl" style="top:70%">3</div><div class="lbl" style="top:60%">4</div><div class="lbl" style="top:50%">5</div><div class="lbl" style="top:40%">6</div><div class="lbl" style="top:30%">7</div><div class="lbl" style="top:20%">8</div><div class="lbl" style="top:10%">9</div></div>
+    <div class="axis axis-y-right"><div class="lbl" style="top:90%">1</div><div class="lbl" style="top:80%">2</div><div class="lbl" style="top:70%">3</div><div class="lbl" style="top:60%">4</div><div class="lbl" style="top:50%">5</div><div class="lbl" style="top:40%">6</div><div class="lbl" style="top:30%">7</div><div class="lbl" style="top:20%">8</div><div class="lbl" style="top:10%">9</div></div>
+  </div>
+  <div class="directions">
+    <h2>Compass course — walk each leg on its bearing for the given distance</h2>
+    <ol id="dirs"></ol>
+  </div>
+  <div class="footer">
+    <div>Map data © OpenStreetMap contributors, ODbL.</div>
+    <div id="foot">Bearings are true (grid north).</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script src="route-builder/route-engine.js"></script>
+<script>
+  const RE = window.RouteEngine;
+  const $ = (id) => document.getElementById(id);
+  let CENTER = [51.374094, -2.382752];
+
+  // ---- map ----
+  const map = L.map('map', { zoomControl:false, attributionControl:false,
+    scrollWheelZoom:true, doubleClickZoom:false, boxZoom:false, keyboard:false,
+    zoomSnap:0, zoomDelta:0.5, fadeAnimation:false });
+  let RANGE_M = 850;
+  function fitSquare() {
+    const side = Math.min(map.getContainer().clientWidth, map.getContainer().clientHeight);
+    const mpp = RANGE_M / side;
+    const z = Math.log2(156543.03392 * Math.cos(CENTER[0]*Math.PI/180) / mpp);
+    map.setView(CENTER, Math.min(z, 19), { animate:false });
+  }
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, crossOrigin:true }).addTo(map);
+  fitSquare();
+  setTimeout(() => { map.invalidateSize(); fitSquare(); }, 200);
+  setTimeout(() => { map.invalidateSize(); fitSquare(); }, 800);
+  window.addEventListener('resize', () => map.invalidateSize());
+
+  const routeLayer = L.layerGroup().addTo(map);
+  let lastLegs = [], lastRound = false;
+
+  // ---- street graph cache ----
+  let graph = null, graphKey = null;
+
+  function parseChurch() {
+    const v = $('church').value.split(',').map(s => parseFloat(s.trim()));
+    if (v.length === 2 && isFinite(v[0]) && isFinite(v[1])) return [v[0], v[1]];
+    return null;
+  }
+
+  async function fetchGraph(center, radiusM) {
+    const key = center[0].toFixed(5)+','+center[1].toFixed(5)+'@'+Math.round(radiusM);
+    if (graph && graphKey === key) return graph;
+    const query = RE.overpassQuery(center, radiusM);
+    const hosts = ['https://overpass-api.de/api/interpreter',
+                   'https://overpass.kumi.systems/api/interpreter'];
+    let lastErr;
+    for (const host of hosts) {
+      try {
+        setStatus('Downloading streets from OpenStreetMap…');
+        const r = await fetch(host, { method:'POST', body:'data='+encodeURIComponent(query),
+          headers:{ 'Content-Type':'application/x-www-form-urlencoded' } });
+        if (!r.ok) throw new Error('HTTP '+r.status);
+        const json = await r.json();
+        graph = RE.graphFromOSM(json); graphKey = key;
+        return graph;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error('Overpass unreachable');
+  }
+
+  function setStatus(msg, err) {
+    const s = $('status'); s.textContent = msg; s.className = 'status' + (err ? ' err' : '');
+  }
+  function setProgress(f) { $('prog').style.width = Math.round(f*100)+'%'; }
+
+  // ---- render ----
+  function render(best, round5) {
+    routeLayer.clearLayers();
+    const route = best.routed.map(p => [p[0], p[1]]);
+    L.polyline(route, { color:'#1565c0', weight:4, opacity:.9 }).addTo(routeLayer);
+
+    const pts = best.points;
+    pts.forEach((p, i) => {
+      const start = (i === 0);
+      L.marker([p[0],p[1]], { icon: L.divIcon({ className:'',
+        html:`<div class="route-marker ${start?'startpt':''}">${start?'S':i}</div>`,
+        iconSize:start?[24,24]:[18,18], iconAnchor:start?[12,12]:[9,9] }) }).addTo(routeLayer);
+    });
+    for (let i = 0; i < best.legs.length && i+1 < pts.length; i++) {
+      const a = pts[i], b = pts[i+1], mid = [(a[0]+b[0])/2, (a[1]+b[1])/2];
+      const bd = fmtBearing(best.legs[i][0], round5);
+      L.marker(mid, { interactive:false, icon: L.divIcon({ className:'',
+        html:`<div class="leg-label">${i+1}: ${bd} ${Math.round(best.legs[i][1])}m</div>`,
+        iconSize:[0,0] }) }).addTo(routeLayer);
+    }
+
+    // fit square to route
+    const { toXY } = RE.localXY(CENTER);
+    let reach = 200;
+    for (const p of best.routed) { const xy = toXY(p); reach = Math.max(reach, Math.abs(xy[0]), Math.abs(xy[1])); }
+    RANGE_M = Math.max(400, reach*2*1.15);
+    fitSquare();
+
+    // directions list
+    const ol = $('dirs'); ol.innerHTML = '';
+    best.legs.forEach(([b,d]) => {
+      const li = document.createElement('li');
+      li.textContent = fmtBearing(b, round5) + '  —  ' + Math.round(d) + ' m';
+      ol.appendChild(li);
+    });
+
+    const mins = best.length/1000/parseFloat($('pace').value)*60;
+    $('subtitle').textContent =
+      `Shape: ${best.shape} · ${best.legs.length} legs · ${Math.round(best.length)} m · ~${Math.round(mins)} min · start & finish at the Church of the Ascension`;
+    $('foot').textContent = `Bearings are true (grid north). ${best.legs.length} legs · ${Math.round(best.length)} m.`;
+    $('result').style.display = ''; $('copy').style.display = '';
+    $('result').innerHTML =
+      `<b>${best.shape}</b> · ${Math.round(best.length)} m · ~${Math.round(mins)} min<br>` +
+      `${best.legs.length} legs · fit deviation ≈ ${Math.round(best.score)} m`;
+    lastLegs = best.legs; lastRound = round5;
+  }
+
+  function fmtBearing(deg, round5) {
+    const b = round5 ? (Math.round(deg/5)*5)%360 : Math.round(deg);
+    return String(b).padStart(3,'0') + '°';
+  }
+
+  // ---- generate ----
+  async function generate() {
+    const center = parseChurch();
+    if (!center) { setStatus('Bad church coordinates — use "lat,lng".', true); return; }
+    CENTER = center;
+    const shapes = [...document.querySelectorAll('#shapes input:checked')].map(c => c.value);
+    if (!shapes.length) { setStatus('Tick at least one shape.', true); return; }
+    const minutes = parseFloat($('minutes').value);
+    const pace = parseFloat($('pace').value);
+    const maxr = parseFloat($('maxr').value);
+    const lenw = parseFloat($('lenw').value);
+    const round5 = $('round5').checked;
+    const targetM = pace*1000/60*minutes;
+
+    $('gen').disabled = true; $('refetch').disabled = true; setProgress(0);
+    try {
+      const g = await fetchGraph(center, Math.max(maxr+200, targetM*0.6));
+      setStatus(`Streets loaded (${g.nodes.size} junctions). Searching placements…`);
+      await new Promise(r => setTimeout(r, 30));
+      const best = await RE.searchAsync(g, center, {
+        shapes, targetM, lenWeight:lenw, rMax: maxr,
+        onProgress: (f) => setProgress(f),
+      });
+      if (!best) { setStatus('No routable shape found — try a bigger reach or fewer minutes.', true); return; }
+      render(best, round5);
+      setStatus(`Done — best match: ${best.shape}.`);
+      setProgress(1);
+    } catch (e) {
+      setStatus('Could not load streets: ' + e.message +
+        '. Check your connection (Overpass may be busy — wait and retry).', true);
+    } finally {
+      $('gen').disabled = false; $('refetch').disabled = false;
+    }
+  }
+
+  $('gen').addEventListener('click', generate);
+  $('refetch').addEventListener('click', () => { graph = null; graphKey = null; generate(); });
+  $('copy').addEventListener('click', () => {
+    if (!lastLegs.length) return;
+    const txt = lastLegs.map((l,i) =>
+      `${i+1}. ${fmtBearing(l[0],lastRound)}  ${Math.round(l[1])} m`).join('\n');
+    navigator.clipboard?.writeText(txt).then(
+      () => { const b=$('copy'); b.textContent='Copied!'; setTimeout(()=>b.textContent='Copy directions',1200); },
+      () => prompt('Copy the directions:', txt));
+  });
+
+  let saved=null;
+  addEventListener('beforeprint', () => { saved={c:map.getCenter(),z:map.getZoom()}; map.invalidateSize(); fitSquare(); });
+  addEventListener('afterprint', () => { if(saved){ map.setView(saved.c,saved.z,{animate:false}); saved=null; } });
+</script>
+</body>
+</html>
