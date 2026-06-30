@@ -73,16 +73,29 @@
     return pts.slice(lo).concat(pts.slice(0, lo));
   }
 
+  // Bold, few-vertex outlines read best once snapped to the street grid.
+  // Each is a closed ring; the FIRST vertex is the church anchor (bottom-centre).
   const SHAPES = {
-    tent:  [[0, -0.8], [-1, -0.8], [0, 1], [1, -0.8]],
-    house: [[0, -1], [-1, -1], [-1, 0.15], [0, 1], [1, 0.15], [1, -1]],
-    tree:  [[0, -1.0], [0.16, -1.0], [0.16, -0.55], [0.62, -0.55],
-            [0.30, -0.18], [0.50, -0.18], [0.22, 0.22], [0.40, 0.22],
-            [0.0, 0.95],
-            [-0.40, 0.22], [-0.22, 0.22], [-0.50, -0.18], [-0.30, -0.18],
-            [-0.62, -0.55], [-0.16, -0.55], [-0.16, -1.0]],
-    star:  star(),
-    heart: heart(),
+    // bold & obvious
+    diamond: [[0, -1], [-1, 0], [0, 1], [1, 0]],
+    square:  [[0, -1], [-1, -1], [-1, 1], [1, 1], [1, -1]],
+    arrow:   [[0, -1], [-0.33, -1], [-0.33, 0.2], [-0.66, 0.2],
+              [0, 1], [0.66, 0.2], [0.33, 0.2], [0.33, -1]],   // up arrow
+    cross:   [[0, -1], [-0.34, -1], [-0.34, -0.34], [-1, -0.34],
+              [-1, 0.34], [-0.34, 0.34], [-0.34, 1], [0.34, 1],
+              [0.34, 0.34], [1, 0.34], [1, -0.34], [0.34, -0.34], [0.34, -1]],
+    heart:   heart(),
+    star:    star(),
+    bolt:    [[0, -1], [-0.15, -1], [0.25, -0.1], [-0.1, -0.1],
+              [0.15, 1], [-0.45, 0.0], [0.0, 0.0], [-0.35, -1]], // lightning
+    // recognisable scenes
+    house:   [[0, -1], [-1, -1], [-1, 0.15], [0, 1], [1, 0.15], [1, -1]],
+    tent:    [[0, -0.85], [-1, -0.85], [0, 1], [1, -0.85]],
+    tree:    [[0, -1.0], [0.16, -1.0], [0.16, -0.55], [0.62, -0.55],
+              [0.30, -0.18], [0.50, -0.18], [0.22, 0.22], [0.40, 0.22],
+              [0.0, 0.95],
+              [-0.40, 0.22], [-0.22, 0.22], [-0.50, -0.18], [-0.30, -0.18],
+              [-0.62, -0.55], [-0.16, -0.55], [-0.16, -1.0]],
   };
 
   // ---- graph -------------------------------------------------------------
@@ -200,6 +213,25 @@
     return path.reverse();
   }
 
+  // Insert intermediate points so consecutive waypoints are <= maxStepM apart.
+  // This pins the route to the shape outline at many points, so diagonal /
+  // curved edges trace as staircases instead of being short-cut by one big
+  // L-shaped Dijkstra path (which turns triangles & diamonds into boxes).
+  function densify(waypoints, maxStepM) {
+    if (!maxStepM || maxStepM <= 0) return waypoints;
+    const out = [waypoints[0]];
+    for (let i = 1; i < waypoints.length; i++) {
+      const a = waypoints[i - 1], b = waypoints[i];
+      const d = haversine(a, b);
+      const n = Math.max(1, Math.ceil(d / maxStepM));
+      for (let k = 1; k <= n; k++) {
+        const t = k / n;
+        out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+      }
+    }
+    return out;
+  }
+
   function routeWaypoints(g, waypoints) {
     const nodes = waypoints.map((w) => nearestNode(g, w));
     const poly = [];
@@ -239,17 +271,20 @@
     return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
   }
 
-  function matchScore(center, idealLL, routedLL) {
-    const { toXY } = localXY(center);
-    const ideal = idealLL.map(toXY), routed = routedLL.map(toXY);
-    if (ideal.length < 2 || routed.length < 2) return 1e9;
-    const segs = [];
-    for (let i = 1; i < ideal.length; i++) segs.push([ideal[i - 1], ideal[i]]);
+  function segsOf(poly) {
+    const s = [];
+    for (let i = 1; i < poly.length; i++) s.push([poly[i - 1], poly[i]]);
+    return s;
+  }
+
+  // Mean distance from points sampled along `poly` to the nearest segment in
+  // `segs` (sampling ~ every `step` metres).
+  function meanDistToSegs(poly, segs, step) {
     let tot = 0, cnt = 0;
-    for (let i = 1; i < routed.length; i++) {
-      const a = routed[i - 1], b = routed[i];
+    for (let i = 1; i < poly.length; i++) {
+      const a = poly[i - 1], b = poly[i];
       const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      const steps = Math.max(1, Math.floor(L / 10));
+      const steps = Math.max(1, Math.floor(L / step));
       for (let k = 0; k < steps; k++) {
         const t = k / steps, p = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
         let m = Infinity;
@@ -258,6 +293,19 @@
       }
     }
     return tot / Math.max(1, cnt);
+  }
+
+  // Symmetric shape-match error (metres). Averages:
+  //  - how far the routed path strays from the ideal outline, and
+  //  - how well the routed path COVERS the ideal outline (so a route that
+  //    only traces part of the shape is penalised).
+  function matchScore(center, idealLL, routedLL) {
+    const { toXY } = localXY(center);
+    const ideal = idealLL.map(toXY), routed = routedLL.map(toXY);
+    if (ideal.length < 2 || routed.length < 2) return 1e9;
+    const a = meanDistToSegs(routed, segsOf(ideal), 10);   // stray
+    const b = meanDistToSegs(ideal, segsOf(routed), 10);   // coverage
+    return 0.5 * (a + b);
   }
 
   // ---- RDP simplify -> compass legs -------------------------------------
@@ -309,24 +357,31 @@
   }
 
   // ---- search ------------------------------------------------------------
-  function evaluate(g, center, name, unit, radius, rot, offset, targetM, lenWeight) {
+  function evaluate(g, center, name, unit, radius, rot, offset, targetM, lenWeight, stepM) {
     const wp = placeShape(unit, center, radius, rot, offset);
-    const routed = routeWaypoints(g, wp);
+    const routed = routeWaypoints(g, densify(wp, stepM ?? 110));
     if (!routed || routed.length < 3) return null;
     const length = polyLen(routed);
     const score = matchScore(center, wp, routed);
     const lenPen = Math.abs(length - targetM) / Math.max(1, targetM);
     const rotPen = (Math.abs(((rot + 180) % 360) - 180) / 45) ** 2;
-    const cost = score + lenWeight * lenPen * 100 + rotPen * 8;
-    return { shape: name, rot, radius, offset, waypoints: wp, routed, length, score, cost };
+    // Detour penalty: how much longer the routed path is than the ideal
+    // outline. ~1.2-1.3x is normal road wobble; big ratios mean the snapping
+    // forced ugly detours that wreck the shape.
+    const idealPerim = polyLen(wp);
+    const detour = idealPerim > 0 ? length / idealPerim : 1;
+    const detourPen = Math.max(0, detour - 1.5);
+    const cost = score + lenWeight * lenPen * 100 + rotPen * 8 + detourPen * 60;
+    return { shape: name, rot, radius, offset, waypoints: wp, routed,
+             length, score, detour, cost };
   }
 
   // Binary-search the radius that brings routed length closest to target.
-  function bestRadius(g, center, name, unit, rot, offset, targetM, lenWeight, rMin, rMax) {
+  function bestRadius(g, center, name, unit, rot, offset, targetM, lenWeight, rMin, rMax, stepM) {
     let lo = rMin, hi = rMax, best = null;
     for (let it = 0; it < 7; it++) {
       const mid = (lo + hi) / 2;
-      const c = evaluate(g, center, name, unit, mid, rot, offset, targetM, lenWeight);
+      const c = evaluate(g, center, name, unit, mid, rot, offset, targetM, lenWeight, stepM);
       if (c) {
         if (!best || c.cost < best.cost) best = c;
         if (c.length < targetM) lo = mid; else hi = mid;
@@ -346,6 +401,7 @@
     const rotations = opts.rotations || [-12, 0, 12];
     const offsets = opts.offsets || [[0, 0], [0, 140], [0, -140]];
     const rMin = opts.rMin ?? 200, rMax = opts.rMax ?? 900;
+    const stepM = opts.stepM ?? 110;
     const total = shapeNames.length * rotations.length * offsets.length;
     let done = 0, best = null;
     for (const name of shapeNames) {
@@ -354,7 +410,7 @@
       if (!unit) { done += rotations.length * offsets.length; continue; }
       for (const rot of rotations)
         for (const off of offsets) {
-          const c = bestRadius(g, center, name, unit, rot, off, targetM, lenWeight, rMin, rMax);
+          const c = bestRadius(g, center, name, unit, rot, off, targetM, lenWeight, rMin, rMax, stepM);
           if (c && (!best || c.cost < best.cost)) best = c;
           done++;
           if (opts.onProgress) opts.onProgress(done / total);
@@ -373,6 +429,7 @@
     const rotations = opts.rotations || [-12, 0, 12];
     const offsets = opts.offsets || [[0, 0], [0, 140], [0, -140]];
     const rMin = opts.rMin ?? 200, rMax = opts.rMax ?? 900;
+    const stepM = opts.stepM ?? 110;
     const total = shapeNames.length * rotations.length * offsets.length;
     let done = 0, best = null;
     for (const name of shapeNames) {
@@ -381,7 +438,7 @@
       if (!unit) { done += rotations.length * offsets.length; continue; }
       for (const rot of rotations) {
         for (const off of offsets) {
-          const c = bestRadius(g, center, name, unit, rot, off, targetM, lenWeight, rMin, rMax);
+          const c = bestRadius(g, center, name, unit, rot, off, targetM, lenWeight, rMin, rMax, stepM);
           if (c && (!best || c.cost < best.cost)) best = c;
           done++;
           if (opts.onProgress) opts.onProgress(done / total, best);

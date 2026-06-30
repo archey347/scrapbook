@@ -93,9 +93,20 @@ def _heart(n=24):
     pts = pts[lo:] + pts[:lo]
     return pts
 
+# Bold, few-vertex outlines read best once snapped to the street grid. Each is
+# a closed ring; the FIRST vertex is the church anchor (bottom-centre).
 SHAPES = {
+    "diamond": [(0,-1), (-1,0), (0,1), (1,0)],
+    "square":  [(0,-1), (-1,-1), (-1,1), (1,1), (1,-1)],
+    "arrow":   [(0,-1), (-0.33,-1), (-0.33,0.2), (-0.66,0.2),
+                (0,1), (0.66,0.2), (0.33,0.2), (0.33,-1)],
+    "cross":   [(0,-1), (-0.34,-1), (-0.34,-0.34), (-1,-0.34),
+                (-1,0.34), (-0.34,0.34), (-0.34,1), (0.34,1),
+                (0.34,0.34), (1,0.34), (1,-0.34), (0.34,-0.34), (0.34,-1)],
+    "bolt":    [(0,-1), (-0.15,-1), (0.25,-0.1), (-0.1,-0.1),
+                (0.15,1), (-0.45,0.0), (0.0,0.0), (-0.35,-1)],
     # apex-up triangle, church at base midpoint
-    "tent":  [(0,-0.8), (-1,-0.8), (0,1), (1,-0.8)],
+    "tent":  [(0,-0.85), (-1,-0.85), (0,1), (1,-0.85)],
     # square box + roof, church at bottom-centre
     "house": [(0,-1), (-1,-1), (-1,0.15), (0,1), (1,0.15), (1,-1)],
     # christmas tree with a trunk; church at the trunk base
@@ -218,6 +229,21 @@ def nearest_node(G, ll):
             best, bd = n, dd
     return best
 
+def densify(waypoints, max_step_m):
+    """Insert intermediate points so consecutive waypoints are <= max_step_m
+    apart, pinning the route to the outline so diagonals trace as staircases
+    instead of being short-cut into boxes by Dijkstra."""
+    if not max_step_m or max_step_m <= 0:
+        return waypoints
+    out = [waypoints[0]]
+    for a, b in zip(waypoints, waypoints[1:]):
+        d = haversine(a, b)
+        n = max(1, math.ceil(d / max_step_m))
+        for k in range(1, n + 1):
+            t = k / n
+            out.append((a[0] + t*(b[0]-a[0]), a[1] + t*(b[1]-a[1])))
+    return out
+
 def route_waypoints(G, waypoints):
     """waypoints: list of (lat,lng). Returns full polyline [(lat,lng)...]."""
     import networkx as nx
@@ -267,26 +293,29 @@ def _seg_point_dist(p, a, b):
     cx, cy = ax+t*dx, ay+t*dy
     return math.hypot(px-cx, py-cy)
 
-def match_score(center, ideal_ll, routed_ll):
-    """Mean distance (m) from sampled routed points to the ideal outline.
-    Lower is a closer shape match."""
-    to_xy, _ = local_xy(center)
-    ideal = [to_xy(p) for p in ideal_ll]
-    routed = [to_xy(p) for p in routed_ll]
-    segs = list(zip(ideal, ideal[1:]))
-    if not segs or len(routed) < 2:
-        return 1e9
-    # sample routed path roughly every ~10 m
+def _mean_dist_to_segs(poly, segs, step=10.0):
     tot = 0.0; cnt = 0
-    for (a, b) in zip(routed, routed[1:]):
+    for (a, b) in zip(poly, poly[1:]):
         L = math.hypot(b[0]-a[0], b[1]-a[1])
-        steps = max(1, int(L/10))
+        steps = max(1, int(L/step))
         for k in range(steps):
             t = k/steps
             p = (a[0]+t*(b[0]-a[0]), a[1]+t*(b[1]-a[1]))
             tot += min(_seg_point_dist(p, s0, s1) for s0, s1 in segs)
             cnt += 1
     return tot/max(1, cnt)
+
+def match_score(center, ideal_ll, routed_ll):
+    """Symmetric shape-match error (m): how far the route strays from the ideal
+    outline AND how well it covers it. Lower is a closer match."""
+    to_xy, _ = local_xy(center)
+    ideal = [to_xy(p) for p in ideal_ll]
+    routed = [to_xy(p) for p in routed_ll]
+    if len(ideal) < 2 or len(routed) < 2:
+        return 1e9
+    iseg = list(zip(ideal, ideal[1:]))
+    rseg = list(zip(routed, routed[1:]))
+    return 0.5 * (_mean_dist_to_segs(routed, iseg) + _mean_dist_to_segs(ideal, rseg))
 
 @dataclass
 class Candidate:
@@ -301,9 +330,9 @@ class Candidate:
     cost: float
 
 def evaluate(G, center, shape_name, unit_verts, radius, rot, offset,
-             target_m, len_weight):
+             target_m, len_weight, step_m=110.0):
     wp = place_shape(unit_verts, center, radius, rot, offset)
-    routed = route_waypoints(G, wp)
+    routed = route_waypoints(G, densify(wp, step_m))
     if not routed or len(routed) < 3:
         return None
     length = polyline_length(routed)
@@ -314,7 +343,12 @@ def evaluate(G, center, shape_name, unit_verts, radius, rot, offset,
     # rotated with the route), so without this the optimiser tilts shapes
     # arbitrarily. A tree tilted 45deg is not a tree.
     rot_pen = (abs(((rot + 180) % 360) - 180) / 45.0) ** 2
-    cost = score + len_weight * len_pen * 100.0 + rot_pen * 8.0
+    # Detour penalty: how much longer the route is than the ideal outline.
+    ideal_perim = polyline_length(wp)
+    detour = length / ideal_perim if ideal_perim > 0 else 1.0
+    detour_pen = max(0.0, detour - 1.5)
+    cost = (score + len_weight * len_pen * 100.0
+            + rot_pen * 8.0 + detour_pen * 60.0)
     return Candidate(shape_name, rot, radius, offset, wp, routed,
                      length, score, cost)
 
@@ -624,7 +658,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--church", help='lat,lng of the church (skip geocoding)')
-    ap.add_argument("--shapes", default="tent,house,tree,star,heart",
+    ap.add_argument("--shapes", default="cross,heart,star,house,diamond,arrow,tent,tree",
                     help="comma list of built-in shapes to try")
     ap.add_argument("--svg", help="import an SVG outline as the shape")
     ap.add_argument("--minutes", type=float, default=90.0, help="walk budget")
