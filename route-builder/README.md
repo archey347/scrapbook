@@ -12,6 +12,12 @@ actually read, instead of being short-cut into boxes. The placement search
 scores each candidate on a **symmetric** shape-match (stray + coverage), a
 length-budget term, an upright preference, and a detour penalty.
 
+The route follows **roads only** — primary/secondary/tertiary/unclassified/
+residential/living-street carriageways, no footways, paths, cycleways, steps,
+tracks or service roads. After routing, **out-and-back spurs are removed**: any
+time the path would walk down a road and straight back (a cul-de-sac snap, say)
+the detour is collapsed, so you never double back on yourself.
+
 There are two front-ends sharing one engine:
 
 - **`../oldfield-park-shape-route.html`** — *the main one.* A browser page (a

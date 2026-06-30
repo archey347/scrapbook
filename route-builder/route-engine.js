@@ -100,8 +100,11 @@
 
   // ---- graph -------------------------------------------------------------
   // graph = { nodes: Map(id -> [lat,lng]), adj: Map(id -> [[to, w], ...]) }
-  const WALK_EXCLUDE = new Set(["motorway", "motorway_link", "trunk",
-    "trunk_link", "construction", "proposed", "raceway"]);
+  // ROADS ONLY: named carriageways you'd walk along — no footways, paths,
+  // cycleways, steps, tracks, service roads or pedestrian precincts.
+  const ROAD_TYPES = new Set(["primary", "primary_link", "secondary",
+    "secondary_link", "tertiary", "tertiary_link", "unclassified",
+    "residential", "living_street", "road"]);
 
   function graphFromOSM(osm) {
     const coord = new Map();
@@ -117,7 +120,7 @@
     for (const el of osm.elements) {
       if (el.type !== "way") continue;
       const hw = el.tags && el.tags.highway;
-      if (!hw || WALK_EXCLUDE.has(hw)) continue;
+      if (!hw || !ROAD_TYPES.has(hw)) continue;
       const nd = el.nodes || [];
       for (let i = 1; i < nd.length; i++)
         if (coord.has(nd[i - 1]) && coord.has(nd[i])) link(nd[i - 1], nd[i]);
@@ -232,19 +235,35 @@
     return out;
   }
 
+  // Collapse out-and-back spurs: any time the route walks to a node and comes
+  // straight back the way it came (…A,B,A…), drop the detour. A stack pass
+  // unwinds arbitrarily nested backtracks (like matching brackets), so a road
+  // walked down and then back up cancels out entirely.
+  function despur(ids) {
+    const dd = [];
+    for (const id of ids) if (!dd.length || dd[dd.length - 1] !== id) dd.push(id);
+    const st = [];
+    for (const x of dd) {
+      if (st.length >= 2 && st[st.length - 2] === x) st.pop();  // …A,B + A -> …A
+      else st.push(x);
+    }
+    return st;
+  }
+
   function routeWaypoints(g, waypoints) {
-    const nodes = waypoints.map((w) => nearestNode(g, w));
-    const poly = [];
+    let nodes = waypoints.map((w) => nearestNode(g, w));
+    nodes = nodes.filter((n, i) => i === 0 || n !== nodes[i - 1]); // dedupe snaps
+    if (nodes.length < 2) return null;
+    let ids = [];
     for (let i = 1; i < nodes.length; i++) {
       const path = dijkstra(g, nodes[i - 1], nodes[i]);
       if (!path) return null;
-      const seg = path.map((p) => g.nodes.get(p));
-      const start = (poly.length && seg.length &&
-        poly[poly.length - 1][0] === seg[0][0] &&
-        poly[poly.length - 1][1] === seg[0][1]) ? 1 : 0;
-      for (let k = start; k < seg.length; k++) poly.push(seg[k]);
+      const start = (ids.length && ids[ids.length - 1] === path[0]) ? 1 : 0;
+      for (let k = start; k < path.length; k++) ids.push(path[k]);
     }
-    return poly;
+    ids = despur(ids);
+    if (ids.length < 3) return null;
+    return ids.map((id) => g.nodes.get(id));
   }
 
   const polyLen = (poly) => {
@@ -450,16 +469,18 @@
     return best;
   }
 
-  // Build the Overpass query string for a walk network around a centre.
+  // Build the Overpass query string for the ROAD network around a centre.
   function overpassQuery(center, radiusM) {
-    return `[out:json][timeout:90];(way["highway"](around:${Math.round(radiusM)},` +
-      `${center[0]},${center[1]}););(._;>;);out body;`;
+    const re = [...ROAD_TYPES].sort().join("|");
+    return `[out:json][timeout:90];(way["highway"~"^(${re})$"]` +
+      `(around:${Math.round(radiusM)},${center[0]},${center[1]}););` +
+      `(._;>;);out body;`;
   }
 
   const api = {
     haversine, bearingDeg, localXY, SHAPES, star, heart,
     graphFromOSM, largestComponent, demoGrid,
-    nearestNode, dijkstra, routeWaypoints, polyLen,
+    nearestNode, dijkstra, despur, routeWaypoints, polyLen,
     placeShape, matchScore, rdp, toLegs,
     evaluate, bestRadius, search, searchAsync, overpassQuery,
   };
