@@ -144,15 +144,19 @@ def svg_shape(path):
 # ----------------------------------------------------------------------------
 # Street graph
 # ----------------------------------------------------------------------------
-WALK_EXCLUDE = {"motorway", "motorway_link", "trunk", "trunk_link",
-                "construction", "proposed", "raceway"}
+# ROADS ONLY: named carriageways you'd walk along — no footways, paths,
+# cycleways, steps, tracks, service roads or pedestrian precincts.
+ROAD_TYPES = {"primary", "primary_link", "secondary", "secondary_link",
+              "tertiary", "tertiary_link", "unclassified", "residential",
+              "living_street", "road"}
 
 def fetch_graph(center, radius_m):
     import requests, networkx as nx
     lat, lng = center
+    road_re = "|".join(sorted(ROAD_TYPES))
     q = f"""
     [out:json][timeout:90];
-    (way["highway"](around:{radius_m},{lat},{lng}););
+    (way["highway"~"^({road_re})$"](around:{radius_m},{lat},{lng}););
     (._;>;);
     out body;
     """
@@ -178,7 +182,7 @@ def _graph_from_osm(data):
         if el["type"] != "way":
             continue
         hw = el.get("tags", {}).get("highway")
-        if not hw or hw in WALK_EXCLUDE:
+        if not hw or hw not in ROAD_TYPES:
             continue
         nd = el["nodes"]
         for a, b in zip(nd, nd[1:]):
@@ -244,21 +248,41 @@ def densify(waypoints, max_step_m):
             out.append((a[0] + t*(b[0]-a[0]), a[1] + t*(b[1]-a[1])))
     return out
 
+def _despur(ids):
+    """Collapse out-and-back spurs (…A,B,A… -> …A…). A stack pass unwinds
+    arbitrarily nested backtracks, so a road walked down then back cancels."""
+    dd = []
+    for i in ids:
+        if not dd or dd[-1] != i:
+            dd.append(i)
+    st = []
+    for x in dd:
+        if len(st) >= 2 and st[-2] == x:
+            st.pop()
+        else:
+            st.append(x)
+    return st
+
 def route_waypoints(G, waypoints):
     """waypoints: list of (lat,lng). Returns full polyline [(lat,lng)...]."""
     import networkx as nx
     nodes = [nearest_node(G, w) for w in waypoints]
-    poly = []
+    nodes = [n for i, n in enumerate(nodes) if i == 0 or n != nodes[i-1]]
+    if len(nodes) < 2:
+        return None
+    ids = []
     for a, b in zip(nodes, nodes[1:]):
         try:
             path = nx.dijkstra_path(G, a, b, weight="weight")
         except nx.NetworkXNoPath:
             return None
-        seg = [(G.nodes[p]["lat"], G.nodes[p]["lng"]) for p in path]
-        if poly and seg and poly[-1] == seg[0]:
-            seg = seg[1:]
-        poly.extend(seg)
-    return poly
+        if ids and ids[-1] == path[0]:
+            path = path[1:]
+        ids.extend(path)
+    ids = _despur(ids)
+    if len(ids) < 3:
+        return None
+    return [(G.nodes[p]["lat"], G.nodes[p]["lng"]) for p in ids]
 
 def polyline_length(poly):
     return sum(haversine(a, b) for a, b in zip(poly, poly[1:]))
