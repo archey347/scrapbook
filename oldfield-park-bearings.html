@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Oldfield Park, Bath — Bearing Compass Route Builder</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""/>
+<style>
+  /* ---------------- Page setup ---------------- */
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #ddd;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #111;
+  }
+
+  /* On screen: centre the page mock-up so it looks like a sheet of paper */
+  body {
+    display: flex;
+    justify-content: center;
+    padding: 12px;
+  }
+
+  .sheet {
+    /* A4 minus 10mm margins on each side = 190 x 277 mm */
+    width: 190mm;
+    height: 277mm;
+    background: #fff;
+    box-sizing: border-box;
+    position: relative;
+    box-shadow: 0 2px 14px rgba(0,0,0,0.18);
+    display: flex;
+    flex-direction: column;
+  }
+
+  @media print {
+    html, body { background: #fff; padding: 0; }
+    .sheet {
+      box-shadow: none;
+      width: 190mm;
+      height: 277mm;
+    }
+    .no-print { display: none !important; }
+  }
+
+  /* ---------------- Header ---------------- */
+  .header {
+    text-align: center;
+    padding: 2mm 0 1mm;
+    border-bottom: 0.4mm solid #222;
+  }
+  .header h1 {
+    font-size: 14pt;
+    margin: 0;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .header .sub {
+    font-size: 8pt;
+    color: #444;
+    margin-top: 0.5mm;
+  }
+
+  /* ---------------- Map block ---------------- */
+  .map-block {
+    --gutter: 7mm;
+    position: relative;
+    width: 190mm;
+    height: 190mm;
+    margin: 4mm 0 0 0;
+  }
+
+  .map-frame {
+    position: absolute;
+    top: var(--gutter);
+    left: var(--gutter);
+    width: calc(100% - 2 * var(--gutter));
+    height: calc(100% - 2 * var(--gutter));
+    border: 0.4mm solid #111;
+    overflow: hidden;
+    background: #f7f4ec;
+  }
+
+  #map {
+    width: 100%;
+    height: 100%;
+  }
+
+  .grid-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    width: 100%;
+    height: 100%;
+    z-index: 800;
+  }
+
+  .axis {
+    position: absolute;
+    color: #111;
+    font-size: 8.5pt;
+    font-weight: 600;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .axis-x-top, .axis-x-bot {
+    left: var(--gutter);
+    width: calc(100% - 2 * var(--gutter));
+    height: var(--gutter);
+  }
+  .axis-x-top { top: 0; }
+  .axis-x-bot { bottom: 0; }
+
+  .axis-y-left, .axis-y-right {
+    top: var(--gutter);
+    height: calc(100% - 2 * var(--gutter));
+    width: var(--gutter);
+  }
+  .axis-y-left  { left:  0; }
+  .axis-y-right { right: 0; }
+
+  .axis .lbl {
+    position: absolute;
+    line-height: 1;
+  }
+  .axis-x-top .lbl {
+    bottom: 1mm;
+    transform: translateX(-50%);
+  }
+  .axis-x-bot .lbl {
+    top: 1mm;
+    transform: translateX(-50%);
+  }
+  .axis-y-left .lbl {
+    right: 1mm;
+    transform: translateY(-50%);
+  }
+  .axis-y-right .lbl {
+    left: 1mm;
+    transform: translateY(-50%);
+  }
+
+  /* ---------------- Footer ---------------- */
+  .footer {
+    margin-top: auto;
+    padding: 2mm 4mm;
+    font-size: 7.5pt;
+    color: #333;
+    display: flex;
+    justify-content: space-between;
+    border-top: 0.4mm solid #222;
+  }
+  .footer .scale-bar {
+    display: flex;
+    align-items: center;
+    gap: 2mm;
+  }
+  .scale-bar svg { display: block; }
+
+  /* ---------------- Route builder panel ---------------- */
+  .builder {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    width: 300px;
+    max-height: calc(100vh - 24px);
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    border: 1px solid #aaa;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    z-index: 1000;
+  }
+  .builder header {
+    padding: 10px 12px;
+    border-bottom: 1px solid #ddd;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .builder .hint {
+    padding: 8px 12px;
+    color: #555;
+    font-size: 11px;
+    border-bottom: 1px solid #eee;
+  }
+  .builder .controls {
+    padding: 8px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    border-bottom: 1px solid #eee;
+  }
+  .builder button {
+    padding: 5px 10px;
+    cursor: pointer;
+    border: 1px solid #999;
+    border-radius: 5px;
+    background: #f4f4f4;
+    font-size: 11px;
+  }
+  .builder button:hover { background: #e8e8e8; }
+  .builder button.primary { background: #1976d2; color: #fff; border-color: #1565c0; }
+  .builder button.primary:hover { background: #1565c0; }
+  .builder button.danger { color: #b00; }
+  .builder .legs {
+    overflow-y: auto;
+    padding: 4px 0;
+    flex: 1;
+  }
+  .builder .legs table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+  .builder .legs th, .builder .legs td {
+    padding: 4px 8px;
+    text-align: left;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .builder .legs th {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #777;
+    position: sticky;
+    top: 0;
+    background: #fff;
+  }
+  .builder .legs td.num { text-align: right; }
+  .builder .legs tr.empty td { color: #999; text-align: center; padding: 14px; }
+  .builder .legs tr.sel { background: #fff3cd; }
+  .builder .legs .leg-del {
+    color: #b00;
+    cursor: pointer;
+    font-weight: 700;
+    padding: 0 4px;
+  }
+  .builder .total {
+    padding: 8px 12px;
+    border-top: 1px solid #ddd;
+    font-size: 11px;
+    color: #444;
+    display: flex;
+    justify-content: space-between;
+  }
+  .builder .opts {
+    padding: 6px 12px;
+    border-top: 1px solid #eee;
+    font-size: 11px;
+    display: flex;
+    gap: 14px;
+    align-items: center;
+  }
+  .builder .opts label { cursor: pointer; }
+
+  /* Numbered route point markers */
+  .route-marker {
+    background: #1976d2;
+    color: #fff;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    line-height: 18px;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 700;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  }
+  .route-marker.start { background: #2e7d32; }
+  .route-marker.sel { outline: 3px solid #ffb300; }
+
+  /* Leg labels drawn on the map */
+  .leg-label {
+    background: rgba(255,255,255,0.85);
+    border: 1px solid #1976d2;
+    border-radius: 4px;
+    padding: 0 4px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #14427a;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media print {
+    .leaflet-control-container { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="builder no-print">
+  <header>Bearing Compass — Route Builder</header>
+  <div class="hint">
+    <b>Click the map</b> to drop route points. <b>Drag</b> a point to move it.
+    Click a point (or a row) to select; <b>Delete</b> removes the selected one.
+  </div>
+  <div class="controls">
+    <button id="btn-add" class="primary">Add points: ON</button>
+    <button id="btn-del">Delete selected</button>
+    <button id="btn-undo">Undo last</button>
+    <button id="btn-clear" class="danger">Clear all</button>
+    <button id="btn-copy">Copy list</button>
+  </div>
+  <div class="opts">
+    <label><input type="checkbox" id="opt-labels" checked> Map labels</label>
+    <label title="Round bearings to the nearest 5°"><input type="checkbox" id="opt-round"> Round 5°</label>
+  </div>
+  <div class="legs">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Bearing</th><th>Distance</th><th></th></tr>
+      </thead>
+      <tbody id="legs-body"></tbody>
+    </table>
+  </div>
+  <div class="total">
+    <span id="total-legs">0 legs</span>
+    <span id="total-dist">0 m total</span>
+  </div>
+</div>
+
+<div class="sheet">
+
+  <div class="header">
+    <h1>Oldfield Park, Bath</h1>
+    <div class="sub">Bearing compass course · ~0.4 mi span · centred 51.37371° N, 2.38245° W</div>
+  </div>
+
+  <div class="map-block">
+    <!-- The actual map -->
+    <div class="map-frame">
+      <div id="map"></div>
+      <svg class="grid-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Major gridlines at 1..9 (every 100 svg units = 10% of map) -->
+        <g stroke="#000" stroke-opacity="0.55" stroke-width="1" fill="none" vector-effect="non-scaling-stroke">
+          <line x1="100"  y1="0" x2="100"  y2="1000"/>
+          <line x1="200"  y1="0" x2="200"  y2="1000"/>
+          <line x1="300"  y1="0" x2="300"  y2="1000"/>
+          <line x1="400"  y1="0" x2="400"  y2="1000"/>
+          <line x1="500"  y1="0" x2="500"  y2="1000"/>
+          <line x1="600"  y1="0" x2="600"  y2="1000"/>
+          <line x1="700"  y1="0" x2="700"  y2="1000"/>
+          <line x1="800"  y1="0" x2="800"  y2="1000"/>
+          <line x1="900"  y1="0" x2="900"  y2="1000"/>
+
+          <line y1="100"  x1="0" y2="100"  x2="1000"/>
+          <line y1="200"  x1="0" y2="200"  x2="1000"/>
+          <line y1="300"  x1="0" y2="300"  x2="1000"/>
+          <line y1="400"  x1="0" y2="400"  x2="1000"/>
+          <line y1="500"  x1="0" y2="500"  x2="1000"/>
+          <line y1="600"  x1="0" y2="600"  x2="1000"/>
+          <line y1="700"  x1="0" y2="700"  x2="1000"/>
+          <line y1="800"  x1="0" y2="800"  x2="1000"/>
+          <line y1="900"  x1="0" y2="900"  x2="1000"/>
+        </g>
+
+        <!-- Tick marks pointing inward at the 9 boundaries on each side -->
+        <g stroke="#000" stroke-width="1.4" fill="none" vector-effect="non-scaling-stroke">
+          <!-- top & bottom ticks -->
+          <line x1="100" y1="0"   x2="100" y2="10"/>
+          <line x1="200" y1="0"   x2="200" y2="10"/>
+          <line x1="300" y1="0"   x2="300" y2="10"/>
+          <line x1="400" y1="0"   x2="400" y2="10"/>
+          <line x1="500" y1="0"   x2="500" y2="10"/>
+          <line x1="600" y1="0"   x2="600" y2="10"/>
+          <line x1="700" y1="0"   x2="700" y2="10"/>
+          <line x1="800" y1="0"   x2="800" y2="10"/>
+          <line x1="900" y1="0"   x2="900" y2="10"/>
+          <line x1="100" y1="990" x2="100" y2="1000"/>
+          <line x1="200" y1="990" x2="200" y2="1000"/>
+          <line x1="300" y1="990" x2="300" y2="1000"/>
+          <line x1="400" y1="990" x2="400" y2="1000"/>
+          <line x1="500" y1="990" x2="500" y2="1000"/>
+          <line x1="600" y1="990" x2="600" y2="1000"/>
+          <line x1="700" y1="990" x2="700" y2="1000"/>
+          <line x1="800" y1="990" x2="800" y2="1000"/>
+          <line x1="900" y1="990" x2="900" y2="1000"/>
+          <!-- left & right ticks -->
+          <line x1="0"   y1="100" x2="10"   y2="100"/>
+          <line x1="0"   y1="200" x2="10"   y2="200"/>
+          <line x1="0"   y1="300" x2="10"   y2="300"/>
+          <line x1="0"   y1="400" x2="10"   y2="400"/>
+          <line x1="0"   y1="500" x2="10"   y2="500"/>
+          <line x1="0"   y1="600" x2="10"   y2="600"/>
+          <line x1="0"   y1="700" x2="10"   y2="700"/>
+          <line x1="0"   y1="800" x2="10"   y2="800"/>
+          <line x1="0"   y1="900" x2="10"   y2="900"/>
+          <line x1="990" y1="100" x2="1000" y2="100"/>
+          <line x1="990" y1="200" x2="1000" y2="200"/>
+          <line x1="990" y1="300" x2="1000" y2="300"/>
+          <line x1="990" y1="400" x2="1000" y2="400"/>
+          <line x1="990" y1="500" x2="1000" y2="500"/>
+          <line x1="990" y1="600" x2="1000" y2="600"/>
+          <line x1="990" y1="700" x2="1000" y2="700"/>
+          <line x1="990" y1="800" x2="1000" y2="800"/>
+          <line x1="990" y1="900" x2="1000" y2="900"/>
+        </g>
+
+        <!-- Centre cross at (500, 500) marking the user-supplied centre -->
+        <g stroke="#c00" stroke-width="1.6" fill="none" vector-effect="non-scaling-stroke">
+          <line x1="490" y1="500" x2="510" y2="500"/>
+          <line x1="500" y1="490" x2="500" y2="510"/>
+          <circle cx="500" cy="500" r="3" fill="#c00" stroke="none"/>
+        </g>
+      </svg>
+    </div>
+
+    <div class="axis axis-x-top">
+      <div class="lbl" style="left:10%">1</div>
+      <div class="lbl" style="left:20%">2</div>
+      <div class="lbl" style="left:30%">3</div>
+      <div class="lbl" style="left:40%">4</div>
+      <div class="lbl" style="left:50%">5</div>
+      <div class="lbl" style="left:60%">6</div>
+      <div class="lbl" style="left:70%">7</div>
+      <div class="lbl" style="left:80%">8</div>
+      <div class="lbl" style="left:90%">9</div>
+    </div>
+
+    <div class="axis axis-x-bot">
+      <div class="lbl" style="left:10%">1</div>
+      <div class="lbl" style="left:20%">2</div>
+      <div class="lbl" style="left:30%">3</div>
+      <div class="lbl" style="left:40%">4</div>
+      <div class="lbl" style="left:50%">5</div>
+      <div class="lbl" style="left:60%">6</div>
+      <div class="lbl" style="left:70%">7</div>
+      <div class="lbl" style="left:80%">8</div>
+      <div class="lbl" style="left:90%">9</div>
+    </div>
+
+    <div class="axis axis-y-left">
+      <div class="lbl" style="top:90%">1</div>
+      <div class="lbl" style="top:80%">2</div>
+      <div class="lbl" style="top:70%">3</div>
+      <div class="lbl" style="top:60%">4</div>
+      <div class="lbl" style="top:50%">5</div>
+      <div class="lbl" style="top:40%">6</div>
+      <div class="lbl" style="top:30%">7</div>
+      <div class="lbl" style="top:20%">8</div>
+      <div class="lbl" style="top:10%">9</div>
+    </div>
+
+    <div class="axis axis-y-right">
+      <div class="lbl" style="top:90%">1</div>
+      <div class="lbl" style="top:80%">2</div>
+      <div class="lbl" style="top:70%">3</div>
+      <div class="lbl" style="top:60%">4</div>
+      <div class="lbl" style="top:50%">5</div>
+      <div class="lbl" style="top:40%">6</div>
+      <div class="lbl" style="top:30%">7</div>
+      <div class="lbl" style="top:20%">8</div>
+      <div class="lbl" style="top:10%">9</div>
+    </div>
+
+  </div><!-- /map-block -->
+
+  <div class="footer">
+    <div>Map data © OpenStreetMap contributors, ODbL.</div>
+    <div class="scale-bar">
+      <span>0</span>
+      <svg width="27.34mm" height="2.2mm" viewBox="0 0 100 6"
+           preserveAspectRatio="none">
+        <rect x="0"   y="0" width="25" height="6" fill="#000"/>
+        <rect x="25"  y="0" width="25" height="6" fill="#fff" stroke="#000" stroke-width="0.6"/>
+        <rect x="50"  y="0" width="25" height="6" fill="#000"/>
+        <rect x="75"  y="0" width="25" height="6" fill="#fff" stroke="#000" stroke-width="0.6"/>
+      </svg>
+      <span>100 m</span>
+      <span style="margin-left: 4mm; color:#555;">grid sq ≈ 64 m · scale ≈ 1:3,660</span>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+<script>
+  // -----------------------------------------------------------------
+  // Configuration: centre + extent
+  // -----------------------------------------------------------------
+  const CENTER = [51.37371050339825, -2.382452355676512];
+  const RANGE_MILES = 0.4;
+  const RANGE_M = RANGE_MILES * 1609.344;
+  const HALF_M  = RANGE_M / 2;
+
+  const M_PER_DEG_LAT = 111320;
+  const M_PER_DEG_LON = 111320 * Math.cos(CENTER[0] * Math.PI / 180);
+  const DLAT = HALF_M / M_PER_DEG_LAT;
+  const DLON = HALF_M / M_PER_DEG_LON;
+
+  const SOUTH = CENTER[0] - DLAT;
+  const NORTH = CENTER[0] + DLAT;
+  const WEST  = CENTER[1] - DLON;
+  const EAST  = CENTER[1] + DLON;
+
+  // -----------------------------------------------------------------
+  // Map
+  // -----------------------------------------------------------------
+  const map = L.map('map', {
+    zoomControl: false,
+    attributionControl: false,
+    scrollWheelZoom: true,
+    dragging: true,
+    doubleClickZoom: false,
+    boxZoom: false,
+    keyboard: false,
+    touchZoom: true,
+    inertia: true,
+    fadeAnimation: false,
+    zoomAnimation: true,
+    zoomSnap: 0,
+    zoomDelta: 0.5
+  });
+
+  function fitMetricSquare() {
+    const container = map.getContainer();
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    const sidePx = Math.min(w, h);
+    const metresPerPixel = RANGE_M / sidePx;
+    const phi = CENTER[0] * Math.PI / 180;
+    const z = Math.log2(156543.03392 * Math.cos(phi) / metresPerPixel);
+    const zClamped = Math.min(z, 19);
+    map.setView(CENTER, zClamped, { animate: false });
+  }
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    crossOrigin: true,
+    attribution: '© OpenStreetMap contributors'
+  }).addTo(map);
+
+  fitMetricSquare();
+  setTimeout(() => { map.invalidateSize(); fitMetricSquare(); }, 200);
+  setTimeout(() => { map.invalidateSize(); fitMetricSquare(); }, 800);
+
+  let savedView = null;
+  window.addEventListener('beforeprint', () => {
+    savedView = { center: map.getCenter(), zoom: map.getZoom() };
+    map.invalidateSize();
+    fitMetricSquare();
+  });
+  window.addEventListener('afterprint', () => {
+    if (savedView) {
+      map.setView(savedView.center, savedView.zoom, { animate: false });
+      savedView = null;
+    }
+  });
+
+  window.addEventListener('resize', () => map.invalidateSize());
+
+  // =================================================================
+  // Bearing-compass route builder
+  // =================================================================
+
+  // points: ordered list of { marker, latlng }
+  const points = [];
+  let selectedIdx = -1;
+  let addMode = true;
+
+  const routeLine = L.polyline([], {
+    color: '#1976d2', weight: 3, opacity: 0.85, dashArray: '6 4'
+  }).addTo(map);
+
+  const labelLayer = L.layerGroup().addTo(map);
+
+  const el = (id) => document.getElementById(id);
+  const legsBody  = el('legs-body');
+  const optLabels = el('opt-labels');
+  const optRound  = el('opt-round');
+
+  // --- geo maths --------------------------------------------------
+  const toRad = (d) => d * Math.PI / 180;
+  const toDeg = (r) => r * 180 / Math.PI;
+  const R_EARTH = 6371000; // metres
+
+  function distanceM(a, b) {
+    const dphi = toRad(b.lat - a.lat);
+    const dlam = toRad(b.lng - a.lng);
+    const phi1 = toRad(a.lat), phi2 = toRad(b.lat);
+    const h = Math.sin(dphi/2)**2 +
+              Math.cos(phi1) * Math.cos(phi2) * Math.sin(dlam/2)**2;
+    return 2 * R_EARTH * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  // True (geographic) bearing from a -> b, 0..360, 0 = north, 90 = east
+  function bearingDeg(a, b) {
+    const phi1 = toRad(a.lat), phi2 = toRad(b.lat);
+    const dlam = toRad(b.lng - a.lng);
+    const y = Math.sin(dlam) * Math.cos(phi2);
+    const x = Math.cos(phi1) * Math.sin(phi2) -
+              Math.sin(phi1) * Math.cos(phi2) * Math.cos(dlam);
+    return (toDeg(Math.atan2(y, x)) + 360) % 360;
+  }
+
+  function fmtBearing(deg) {
+    let b = deg;
+    if (optRound.checked) b = Math.round(b / 5) * 5 % 360;
+    return String(Math.round(b)).padStart(3, '0') + '°';
+  }
+  function fmtDist(m) {
+    return (m < 100 ? m.toFixed(1) : Math.round(m)) + ' m';
+  }
+
+  // --- marker creation -------------------------------------------
+  function makeIcon(index, total) {
+    const cls = 'route-marker' +
+      (index === 0 ? ' start' : '') +
+      (index === selectedIdx ? ' sel' : '');
+    return L.divIcon({
+      className: '',
+      html: `<div class="${cls}">${index + 1}</div>`,
+      iconSize: [22, 22],
+      iconAnchor: [11, 11]
+    });
+  }
+
+  function addPoint(latlng) {
+    const marker = L.marker(latlng, {
+      draggable: true,
+      icon: makeIcon(points.length, points.length + 1),
+      keyboard: false
+    }).addTo(map);
+
+    const entry = { marker, latlng };
+    points.push(entry);
+
+    marker.on('drag', () => {
+      entry.latlng = marker.getLatLng();
+      refresh(false);
+    });
+    marker.on('dragend', () => { refresh(); });
+    marker.on('click', (e) => {
+      L.DomEvent.stopPropagation(e);
+      selectIdx(points.indexOf(entry));
+    });
+
+    selectIdx(points.length - 1, false);
+    refresh();
+  }
+
+  function deleteIdx(idx) {
+    if (idx < 0 || idx >= points.length) return;
+    map.removeLayer(points[idx].marker);
+    points.splice(idx, 1);
+    if (selectedIdx >= points.length) selectedIdx = points.length - 1;
+    refresh();
+  }
+
+  function clearAll() {
+    points.forEach(p => map.removeLayer(p.marker));
+    points.length = 0;
+    selectedIdx = -1;
+    refresh();
+  }
+
+  function selectIdx(idx, doRefresh = true) {
+    selectedIdx = idx;
+    if (doRefresh) refresh();
+  }
+
+  // --- compute legs ----------------------------------------------
+  function legs() {
+    const out = [];
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i-1].latlng, b = points[i].latlng;
+      out.push({ bearing: bearingDeg(a, b), distance: distanceM(a, b) });
+    }
+    return out;
+  }
+
+  // --- render -----------------------------------------------------
+  function refresh(full = true) {
+    // polyline
+    routeLine.setLatLngs(points.map(p => p.latlng));
+
+    // marker icons (numbers + selection state)
+    points.forEach((p, i) => p.marker.setIcon(makeIcon(i, points.length)));
+
+    const lg = legs();
+
+    // map leg labels
+    labelLayer.clearLayers();
+    if (optLabels.checked) {
+      for (let i = 1; i < points.length; i++) {
+        const a = points[i-1].latlng, b = points[i].latlng;
+        const mid = L.latLng((a.lat + b.lat) / 2, (a.lng + b.lng) / 2);
+        const leg = lg[i-1];
+        L.marker(mid, {
+          interactive: false,
+          icon: L.divIcon({
+            className: '',
+            html: `<div class="leg-label">${fmtBearing(leg.bearing)} · ${fmtDist(leg.distance)}</div>`,
+            iconSize: [0, 0]
+          })
+        }).addTo(labelLayer);
+      }
+    }
+
+    // table
+    legsBody.innerHTML = '';
+    if (lg.length === 0) {
+      const tr = document.createElement('tr');
+      tr.className = 'empty';
+      tr.innerHTML = `<td colspan="4">${points.length === 0
+        ? 'Click the map to add the start point.'
+        : 'Add another point to create a leg.'}</td>`;
+      legsBody.appendChild(tr);
+    } else {
+      lg.forEach((leg, i) => {
+        const tr = document.createElement('tr');
+        // leg i goes from point i to point i+1; highlight if either end selected
+        if (selectedIdx === i || selectedIdx === i + 1) tr.className = 'sel';
+        tr.innerHTML =
+          `<td>${i + 1}</td>` +
+          `<td>${fmtBearing(leg.bearing)}</td>` +
+          `<td class="num">${fmtDist(leg.distance)}</td>` +
+          `<td><span class="leg-del" title="Delete point ${i + 2}" data-pt="${i + 1}">✕</span></td>`;
+        tr.addEventListener('click', (e) => {
+          if (e.target.classList.contains('leg-del')) return;
+          selectIdx(i + 1);
+          map.panTo(points[i + 1].latlng);
+        });
+        legsBody.appendChild(tr);
+      });
+      legsBody.querySelectorAll('.leg-del').forEach(sp => {
+        sp.addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteIdx(parseInt(sp.dataset.pt, 10));
+        });
+      });
+    }
+
+    // totals
+    const totalDist = lg.reduce((s, l) => s + l.distance, 0);
+    el('total-legs').textContent =
+      `${lg.length} leg${lg.length === 1 ? '' : 's'} · ${points.length} pt`;
+    el('total-dist').textContent = `${fmtDist(totalDist)} total`;
+  }
+
+  // --- text output ------------------------------------------------
+  function listText() {
+    const lg = legs();
+    if (lg.length === 0) return '';
+    return lg.map((l, i) =>
+      `${i + 1}. ${fmtBearing(l.bearing)}  ${fmtDist(l.distance)}`).join('\n');
+  }
+
+  // --- controls ---------------------------------------------------
+  map.on('click', (e) => { if (addMode) addPoint(e.latlng); });
+
+  el('btn-add').addEventListener('click', () => {
+    addMode = !addMode;
+    el('btn-add').textContent = 'Add points: ' + (addMode ? 'ON' : 'OFF');
+    el('btn-add').classList.toggle('primary', addMode);
+  });
+  el('btn-del').addEventListener('click', () => deleteIdx(selectedIdx));
+  el('btn-undo').addEventListener('click', () => deleteIdx(points.length - 1));
+  el('btn-clear').addEventListener('click', () => {
+    if (points.length && confirm('Clear the whole route?')) clearAll();
+  });
+  el('btn-copy').addEventListener('click', () => {
+    const txt = listText();
+    if (!txt) { alert('No legs yet — add at least two points.'); return; }
+    navigator.clipboard?.writeText(txt).then(
+      () => { const b = el('btn-copy'); b.textContent = 'Copied!';
+              setTimeout(() => b.textContent = 'Copy list', 1200); },
+      () => { prompt('Copy the directions:', txt); }
+    );
+  });
+  optLabels.addEventListener('change', () => refresh());
+  optRound.addEventListener('change', () => refresh());
+
+  // keyboard: Delete/Backspace removes selected point
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIdx >= 0) {
+      e.preventDefault();
+      deleteIdx(selectedIdx);
+    }
+  });
+
+  refresh();
+</script>
+
+</body>
+</html>
