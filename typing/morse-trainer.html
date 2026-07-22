@@ -702,7 +702,7 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
   // Schedule the entry at `cursor` for audio playback.
   // `extraGapUnits` is silence to add before the audio (used after word breaks).
   // Returns immediately — the audio is queued on the audio thread.
-  const scheduleCurrent = (extraGapUnits = 0) => {
+  const scheduleCurrent = (extraGapUnits = 0, { minPostAnswerGap = false } = {}) => {
     if (stopRequestedRef.current || pausedRef.current) return;
     const idx = cursorRef.current;
     const entry = tapeRef.current[idx];
@@ -718,7 +718,11 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
     const extraGap = extraGapUnits > 0 ? audio.extraWordGapS : 0;
     const earliest = Math.max(
       now + minLead,
-      lastEndAudioRef.current > 0 ? lastEndAudioRef.current + interLetterGap + extraGap : now + minLead
+      lastEndAudioRef.current > 0 ? lastEndAudioRef.current + interLetterGap + extraGap : now + minLead,
+      // After answering, always leave a full Farnsworth gap from the keypress itself — otherwise
+      // a slow reaction (common while learning) eats the whole gap before the key is even pressed,
+      // and the next letter fires right on top of the keystroke.
+      minPostAnswerGap ? now + interLetterGap + extraGap : 0
     );
 
     const sched = audio.scheduleSequence([entry.char], { startAt: earliest });
@@ -765,7 +769,7 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
     const next = tapeRef.current[cursorRef.current];
     if (!next) return;
     if (next.kind === 'word') return; // wait for space
-    scheduleCurrent(justLeftWordBreak ? 4 : 0);
+    scheduleCurrent(justLeftWordBreak ? 4 : 0, { minPostAnswerGap: true });
   };
 
   // Compute summary stats for the just-finished batch and switch to summary phase.
