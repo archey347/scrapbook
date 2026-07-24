@@ -322,9 +322,16 @@ const FOCUS_SECOND_GAP = 0.15;
 // Targeting is pointless with a tiny alphabet — E/T on their own are already drilled constantly.
 const FOCUS_MIN_UNLOCKED = 3;
 // A batch counts as "at speed" when achieved WPM is within this fraction of the goal, averaged
-// over the last FOCUS_SPEED_WINDOW batches.
+// over the last SPEED_WINDOW batches. Two thresholds, deliberately different:
+//   UNLOCK  — "starting to reach" the goal. New letters don't arrive until throughput is
+//             getting there, so the alphabet grows at the speed you can actually copy it,
+//             not just at the speed you can identify letters given unlimited thinking time.
+//   FOCUS   — already there. Targeting only switches off once you're properly at goal.
+// The gap between them is the useful working band: you're unlocking new letters while the
+// trainer is still drilling your weak ones.
+const UNLOCK_SPEED_RATIO = 0.8;
 const FOCUS_SPEED_OK_RATIO = 0.9;
-const FOCUS_SPEED_WINDOW = 3;
+const SPEED_WINDOW = 3;
 
 // Unlocked letters ranked weakest-first.
 function rankLetters(unlocked, stats) {
@@ -353,17 +360,22 @@ function selectFocusLetters(unlocked, stats, { atSpeed = false } = {}) {
   return focus;
 }
 
-// Is the learner holding close to their goal speed? Reads the trainer's recent batch summaries.
-// Needs at least two scored batches before it will say yes — one good batch is noise, and the
-// cost of targeting a letter that didn't need it is a few reps, while the cost of skipping one
-// that did is stalled progress.
-function isAtGoalSpeed(history) {
+// Recent achieved WPM as a fraction of goal, averaged over the last few batches. Returns null
+// when there isn't enough to go on — one batch is noise, and both the callers below treat
+// "don't know yet" as "not at speed" rather than guessing.
+// Entries carry the goal they were measured against, but history is cleared when the goal
+// changes (see updateWpm) so a raised goal doesn't inherit credit earned at the old one.
+function recentSpeedRatio(history) {
   const recent = (history || [])
     .filter(h => h.achievedWpm != null && h.goalWpm > 0)
-    .slice(-FOCUS_SPEED_WINDOW);
-  if (recent.length < 2) return false;
-  const avg = recent.reduce((a, h) => a + Math.min(1, h.achievedWpm / h.goalWpm), 0) / recent.length;
-  return avg >= FOCUS_SPEED_OK_RATIO;
+    .slice(-SPEED_WINDOW);
+  if (recent.length < 2) return null;
+  return recent.reduce((a, h) => a + Math.min(1, h.achievedWpm / h.goalWpm), 0) / recent.length;
+}
+
+function isAtGoalSpeed(history, ratio = FOCUS_SPEED_OK_RATIO) {
+  const r = recentSpeedRatio(history);
+  return r != null && r >= ratio;
 }
 
 // Recent performance for one letter, used to explain *why* it's being drilled rather than
@@ -406,8 +418,13 @@ function pickBatchLetter(unlocked, stats, focus, avoid) {
   return pickNextLetter(unlocked, stats, avoid);
 }
 
-function shouldUnlockNext(unlocked, stats) {
+// Two gates on introducing a new letter: every unlocked letter is accurate and quick enough
+// (avg score), and throughput is starting to reach the goal (`atSpeed`). Without the second
+// gate the alphabet grows on recognition alone — you can identify every letter given as long
+// as you like to think, collect 26 of them, and still not be able to copy at speed.
+function shouldUnlockNext(unlocked, stats, { atSpeed = true } = {}) {
   if (unlocked.length < 2) return false;
+  if (!atSpeed) return false;
   const scores = unlocked.map(c => {
     const s = stats[c]?.samples;
     if (!s || s.length < MIN_SAMPLES_PER_KEY) return null;
@@ -446,6 +463,11 @@ function App() {
     receive: { unlocked: ['E','T'], stats: {} },
     send:    { unlocked: ['E','T'], stats: {} },
   });
+  // Recent receive-batch results ({ acc, achievedWpm, goalWpm }). Lives here rather than in
+  // Trainer because it now drives three things: the trend strip, whether focus targeting backs
+  // off, and whether new letters are allowed to unlock. Send mode doesn't produce entries —
+  // its conveyor already runs at goal speed, so keeping up is implicit in keying correctly.
+  const [batchHistory, setBatchHistory] = useState([]);
   // Persisted state loads asynchronously, but Trainer/Sender build their first batch in a mount
   // effect — and child effects run before the parent's. Without this gate the first batch of
   // every session is built from the default E/T progress: the wrong alphabet, and no focus
@@ -485,6 +507,9 @@ function App() {
           if (typeof obj.hideTarget === 'boolean') { setHideTarget(obj.hideTarget); }
           if (obj.flowMode === 'run' || obj.flowMode === 'step') { setFlowMode(obj.flowMode); }
           if (obj.keyMode === 'paddle' || obj.keyMode === 'straight') { setKeyMode(obj.keyMode); }
+          // Batch history is persisted so the speed picture — and with it unlocking and focus
+          // backoff — survives a reload instead of resetting to "unknown" every session.
+          if (Array.isArray(obj.batchHistory)) { setBatchHistory(obj.batchHistory.slice(-10)); }
         }
       } catch {}
       finally { setLoaded(true); }
@@ -496,15 +521,31 @@ function App() {
   const persist = useCallback(async (overrides = {}) => {
     try {
       const payload = {
-        progress, wpm, muted, wordBreaks, hideTarget, flowMode, keyMode,
+        progress, wpm, muted, wordBreaks, hideTarget, flowMode, keyMode, batchHistory,
         ...overrides,
       };
       await window.storage.set('morse-keybr-state', JSON.stringify(payload));
     } catch {}
-  }, [progress, wpm, muted, wordBreaks, hideTarget, flowMode, keyMode]);
+  }, [progress, wpm, muted, wordBreaks, hideTarget, flowMode, keyMode, batchHistory]);
+
+  // Record a finished receive batch. Feeds the trend strip, the focus backoff, and the
+  // unlock gate.
+  const pushBatchResult = useCallback((entry) => {
+    setBatchHistory(prev => {
+      const next = [...prev.slice(-9), entry];
+      persist({ batchHistory: next });
+      return next;
+    });
+  }, [persist]);
 
   // Record a sample for the *current* mode
   const recordSample = useCallback((char, correct, ms) => {
+    // Receive gates unlocking on measured throughput; send has no equivalent measure — its
+    // conveyor runs at goal speed whether or not you keep up, so keying a letter correctly
+    // already means you kept pace with it.
+    const atSpeed = mode === 'receive'
+      ? isAtGoalSpeed(batchHistory, UNLOCK_SPEED_RATIO)
+      : true;
     setProgress(prev => {
       const lane = prev[mode];
       const cur = lane.stats[char]?.samples || [];
@@ -512,7 +553,7 @@ function App() {
       const newStats = { ...lane.stats, [char]: { samples } };
       let newUnlocked = lane.unlocked;
       // Check unlock
-      if (shouldUnlockNext(lane.unlocked, newStats) && lane.unlocked.length < INTRO_ORDER.length) {
+      if (shouldUnlockNext(lane.unlocked, newStats, { atSpeed }) && lane.unlocked.length < INTRO_ORDER.length) {
         const nextChar = INTRO_ORDER.find(c => !lane.unlocked.includes(c));
         if (nextChar) {
           newUnlocked = [...lane.unlocked, nextChar];
@@ -527,11 +568,15 @@ function App() {
       persist({ progress: nextProgress });
       return nextProgress;
     });
-  }, [mode, persist]);
+  }, [mode, persist, batchHistory]);
 
   const updateWpm = (w) => {
     setWpm(w); audio.goalWpm = w;
-    persist({ wpm: w });
+    // Batches measured against the old goal say nothing about the new one. Clearing means a
+    // raised goal immediately pauses unlocking and re-engages focus targeting until you've
+    // proved the new speed — and a lowered goal doesn't hand you instant credit either.
+    setBatchHistory([]);
+    persist({ wpm: w, batchHistory: [] });
   };
   const toggleMute = () => {
     const m = !muted; setMuted(m); audio.muted = m;
@@ -565,7 +610,8 @@ function App() {
       send:    { unlocked: ['E','T'], stats: {} },
     };
     setProgress(fresh);
-    persist({ progress: fresh });
+    setBatchHistory([]);
+    persist({ progress: fresh, batchHistory: [] });
     setShowSettings(false);
   };
 
@@ -620,6 +666,8 @@ function App() {
             wordBreaks={wordBreaks}
             flowMode={flowMode}
             toggleFlowMode={toggleFlowMode}
+            history={batchHistory}
+            pushBatchResult={pushBatchResult}
           />
         ) : (
           <Sender
@@ -632,7 +680,12 @@ function App() {
           />
         )}
         <KeyboardPanel unlocked={unlocked} stats={stats} mode={mode} />
-        <ProgressBar unlocked={unlocked} stats={stats} mode={mode} />
+        <ProgressBar
+          unlocked={unlocked}
+          stats={stats}
+          mode={mode}
+          speedRatio={mode === 'receive' ? recentSpeedRatio(batchHistory) : null}
+        />
       </main>
 
       {showSettings && (
@@ -729,7 +782,7 @@ const BATCH_WORD_COUNT = 5;
 const BATCH_WORD_MIN_LEN = 2;
 const BATCH_WORD_MAX_LEN = 5;
 
-function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, toggleFlowMode }) {
+function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, toggleFlowMode, history, pushBatchResult }) {
   // Tape entries: { id, kind: 'letter'|'word', char, answered, typed?, correct?, ms?,
   //                 mistakes? (count of wrong attempts), playedAtAudio? (audio-clock seconds) }
   const [tape, setTape] = useState([]);
@@ -738,8 +791,6 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
   const [phase, setPhase] = useState('playing');
   // Stats for the just-completed batch (set when phase flips to 'summary')
   const [batchStats, setBatchStats] = useState(null);
-  // History of completed batch summaries (for tiny trend strip and the at-speed check)
-  const [history, setHistory] = useState([]);
   // Letters this batch is drilling (see selectFocusLetters). Empty = free practice.
   const [focusLetters, setFocusLetters] = useState([]);
   // Visual playing flag — driven by setTimeouts pegged to audio-clock events. Best-effort,
@@ -976,7 +1027,7 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
       focus: focusResults,
     };
     setBatchStats(summary);
-    setHistory(h => [...h.slice(-9), { acc: firstTryAcc, achievedWpm, goalWpm: wpm }]);
+    pushBatchResult({ acc: firstTryAcc, achievedWpm, goalWpm: wpm });
     setPhase('summary');
     phaseRef.current = 'summary';
   };
@@ -2650,9 +2701,12 @@ function Legend() {
 }
 
 // ---------- PROGRESS BAR ----------
-function ProgressBar({ unlocked, stats, mode }) {
+function ProgressBar({ unlocked, stats, mode, speedRatio }) {
   const total = INTRO_ORDER.length;
   const unlockedCount = unlocked.length;
+  // Receive gates unlocking on throughput as well as mastery, so show both — a mastery bar
+  // sitting at 100% with nothing unlocking would otherwise look broken.
+  const showSpeedGate = mode === 'receive' && unlockedCount < total;
 
   const scores = unlocked.map(c => computeKeyScore(stats[c]?.samples));
   const avgScore = scores.length ? scores.reduce((a,b) => a+b, 0) / scores.length : 0;
@@ -2671,8 +2725,8 @@ function ProgressBar({ unlocked, stats, mode }) {
 
       <div className="mt-6">
         <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-2">
-          <span>Progress to next unlock</span>
-          <span>{Math.round((avgScore / UNLOCK_AVG_SCORE) * 100)}%</span>
+          <span>{showSpeedGate ? 'Unlock gate 1 · letter mastery' : 'Progress to next unlock'}</span>
+          <span>{Math.min(100, Math.round((avgScore / UNLOCK_AVG_SCORE) * 100))}%</span>
         </div>
         <div className="h-1.5 bg-stone-200 rounded-full overflow-hidden">
           <div
@@ -2684,6 +2738,39 @@ function ProgressBar({ unlocked, stats, mode }) {
           />
         </div>
       </div>
+
+      {showSpeedGate && (
+        <div className="mt-4">
+          <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-2">
+            <span>Unlock gate 2 · copy speed</span>
+            <span>
+              {speedRatio == null
+                ? 'needs 2 batches'
+                : `${Math.round(speedRatio * 100)}% of goal`}
+            </span>
+          </div>
+          <div className="relative h-1.5 bg-stone-200 rounded-full overflow-hidden">
+            <div
+              className="h-full transition-all duration-700 rounded-full"
+              style={{
+                width: `${Math.min(100, (speedRatio ?? 0) * 100)}%`,
+                background: (speedRatio ?? 0) >= UNLOCK_SPEED_RATIO ? '#16a34a' : '#1a1a1a',
+              }}
+            />
+            {/* Threshold marker — where the gate opens */}
+            <div
+              className="absolute top-0 bottom-0 w-px"
+              style={{ left: `${UNLOCK_SPEED_RATIO * 100}%`, background: '#a8a29e' }}
+              title={`${Math.round(UNLOCK_SPEED_RATIO * 100)}% of goal speed`}
+            />
+          </div>
+          <p className="text-[11px] text-stone-500 mt-2 leading-relaxed">
+            {avgScore >= UNLOCK_AVG_SCORE && (speedRatio ?? 0) < UNLOCK_SPEED_RATIO
+              ? `Your letters are solid — the next one arrives once recent batches hold ${Math.round(UNLOCK_SPEED_RATIO * 100)}% of your goal speed. Keep practising, or lower the goal in settings.`
+              : `New letters arrive when every letter is quick and clean and your recent batches reach ${Math.round(UNLOCK_SPEED_RATIO * 100)}% of your goal speed.`}
+          </p>
+        </div>
+      )}
     </section>
   );
 }
@@ -2853,7 +2940,10 @@ function InfoPanel({ onClose }) {
             <span className="font-medium">Focused batches</span> — before each batch the trainer ranks your unlocked letters by miskeys and reaction time, takes the weakest one or two, and makes them roughly a third of what you'll hear. They're named above the tape and ringed on the keyboard, with the reason they were picked. Once every letter is clean <em>and</em> you're holding close to your goal speed, targeting switches off and batches go back to even practice across the whole alphabet.
           </p>
           <p className="mt-2">
-            After each batch you'll see your accuracy, average reaction time, how close you got to your goal speed, and how the drilled letters went. You start with just <span className="mono font-bold">E</span> (·) and <span className="mono font-bold">T</span> (—); new letters unlock as you build accuracy and speed.
+            After each batch you'll see your accuracy, average reaction time, how close you got to your goal speed, and how the drilled letters went. You start with just <span className="mono font-bold">E</span> (·) and <span className="mono font-bold">T</span> (—).
+          </p>
+          <p className="mt-2">
+            <span className="font-medium">Unlocking</span> — a new letter arrives only when two things are true: every letter you have is quick and clean, <em>and</em> your recent batches are copying at {Math.round(UNLOCK_SPEED_RATIO * 100)}% of your goal speed. Recognition alone isn't enough — given unlimited thinking time you could collect all 26 and still not copy at speed, so the alphabet grows only as fast as your throughput does. Both gates are shown at the bottom of the page. Changing the goal speed clears the speed picture, so raising it pauses unlocking until you've proved the new pace.
           </p>
         </div>
         <div>
