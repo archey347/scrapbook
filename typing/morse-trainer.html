@@ -301,6 +301,111 @@ function pickNextLetter(unlocked, stats, avoid = null) {
   return c;
 }
 
+// ---------- FOCUSED PRACTICE ----------
+// keybr-style targeting. Spreading every batch evenly over the whole unlocked alphabet means
+// the letters you already know soak up most of the reps. Instead, each batch picks the one or
+// two weakest letters and over-represents them, so practice time lands where the learning is.
+// Weakness is the same score the keyboard colours use — a blend of miskeys and reaction time
+// over the last few encounters — so a letter you're merely slow on is as eligible as one you
+// keep getting wrong.
+const FOCUS_MAX = 2;
+// Share of draws taken from the focus set. Repeat-avoidance knocks the realised share down
+// when there's only one focus letter (a blocked draw falls through to the rest of the
+// alphabet), landing around 30% for one letter and 40% for two — a strong tilt that still
+// leaves the batch feeling like practice rather than two letters on repeat.
+const FOCUS_SHARE = 0.4;
+// At or above this score a letter is solid enough not to need drilling.
+const FOCUS_SOLID_SCORE = 0.85;
+// A second focus letter only joins if it's within this much of the weakest — otherwise the
+// drill gets diluted by a letter that isn't really the problem.
+const FOCUS_SECOND_GAP = 0.15;
+// Targeting is pointless with a tiny alphabet — E/T on their own are already drilled constantly.
+const FOCUS_MIN_UNLOCKED = 3;
+// A batch counts as "at speed" when achieved WPM is within this fraction of the goal, averaged
+// over the last FOCUS_SPEED_WINDOW batches.
+const FOCUS_SPEED_OK_RATIO = 0.9;
+const FOCUS_SPEED_WINDOW = 3;
+
+// Unlocked letters ranked weakest-first.
+function rankLetters(unlocked, stats) {
+  return unlocked
+    .map(c => ({ char: c, score: computeKeyScore(stats[c]?.samples) }))
+    .sort((a, b) => a.score - b.score);
+}
+
+// Choose the letters this batch should drill. Returns [] when targeting isn't warranted:
+// either too few letters are unlocked, or the learner is clean *and* holding close to their
+// goal speed — at which point there's no weak spot worth stealing reps from the rest of the
+// alphabet for, and even practice is the better use of the batch.
+function selectFocusLetters(unlocked, stats, { atSpeed = false } = {}) {
+  if (unlocked.length < FOCUS_MIN_UNLOCKED) return [];
+  const ranked = rankLetters(unlocked, stats);
+  const weakest = ranked[0];
+  if (!weakest) return [];
+  if (atSpeed && weakest.score >= FOCUS_SOLID_SCORE) return [];
+  const focus = [weakest.char];
+  for (let i = 1; i < ranked.length && focus.length < FOCUS_MAX; i++) {
+    const cand = ranked[i];
+    if (cand.score >= FOCUS_SOLID_SCORE) break;
+    if (cand.score - weakest.score > FOCUS_SECOND_GAP) break;
+    focus.push(cand.char);
+  }
+  return focus;
+}
+
+// Is the learner holding close to their goal speed? Reads the trainer's recent batch summaries.
+// Needs at least two scored batches before it will say yes — one good batch is noise, and the
+// cost of targeting a letter that didn't need it is a few reps, while the cost of skipping one
+// that did is stalled progress.
+function isAtGoalSpeed(history) {
+  const recent = (history || [])
+    .filter(h => h.achievedWpm != null && h.goalWpm > 0)
+    .slice(-FOCUS_SPEED_WINDOW);
+  if (recent.length < 2) return false;
+  const avg = recent.reduce((a, h) => a + Math.min(1, h.achievedWpm / h.goalWpm), 0) / recent.length;
+  return avg >= FOCUS_SPEED_OK_RATIO;
+}
+
+// Recent performance for one letter, used to explain *why* it's being drilled rather than
+// leaving the choice as magic.
+function letterDiagnostic(char, stats) {
+  const samples = (stats[char]?.samples || []).slice(-RECENT_WINDOW);
+  if (samples.length === 0) return { samples: 0, acc: null, avgMs: null, reason: 'new' };
+  const correct = samples.filter(s => s.correct);
+  const acc = correct.length / samples.length;
+  const avgMs = correct.length
+    ? correct.reduce((a, b) => a + b.ms, 0) / correct.length
+    : null;
+  // 'trailing' is the all-clean case: nothing wrong with this letter in absolute terms, it's
+  // just the slowest of a solid set — which is what gets drilled while you're chasing speed.
+  const reason = samples.length < MIN_SAMPLES_PER_KEY ? 'new'
+    : acc <= 0.8 ? 'misses'
+    : (avgMs != null && avgMs > targetReactionMs()) ? 'slow'
+    : acc < 1 ? 'shaky'
+    : 'trailing';
+  return { samples: samples.length, acc, avgMs, reason };
+}
+
+// Draw a letter for one batch slot: FOCUS_SHARE of the time from the focus set (skipping any
+// that would repeat the previous letter), otherwise from the normal weakness-weighted pool.
+function pickBatchLetter(unlocked, stats, focus, avoid) {
+  if (focus.length > 0) {
+    if (Math.random() < FOCUS_SHARE) {
+      const candidates = focus.filter(c => c !== avoid);
+      if (candidates.length > 0) {
+        return candidates[Math.floor(Math.random() * candidates.length)];
+      }
+    }
+    // The rest of the batch is drawn from everything *except* the focus set. The focus letters
+    // are by definition the weakest, so leaving them in the weighted pool would pile more of
+    // them on top of the focus draws — two letters ended up as two thirds of the batch. Taking
+    // them out makes FOCUS_SHARE the only knob that decides how concentrated a batch is.
+    const rest = unlocked.filter(c => !focus.includes(c));
+    if (rest.length > 0) return pickNextLetter(rest, stats, avoid);
+  }
+  return pickNextLetter(unlocked, stats, avoid);
+}
+
 function shouldUnlockNext(unlocked, stats) {
   if (unlocked.length < 2) return false;
   const scores = unlocked.map(c => {
@@ -341,6 +446,12 @@ function App() {
     receive: { unlocked: ['E','T'], stats: {} },
     send:    { unlocked: ['E','T'], stats: {} },
   });
+  // Persisted state loads asynchronously, but Trainer/Sender build their first batch in a mount
+  // effect — and child effects run before the parent's. Without this gate the first batch of
+  // every session is built from the default E/T progress: the wrong alphabet, and no focus
+  // letters (targeting needs FOCUS_MIN_UNLOCKED). localStorage resolves in a microtask, so the
+  // placeholder below is never actually seen.
+  const [loaded, setLoaded] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   const [unlockToast, setUnlockToast] = useState(null);
@@ -376,6 +487,7 @@ function App() {
           if (obj.keyMode === 'paddle' || obj.keyMode === 'straight') { setKeyMode(obj.keyMode); }
         }
       } catch {}
+      finally { setLoaded(true); }
     })();
   }, []);
 
@@ -495,7 +607,11 @@ function App() {
       />
 
       <main className="max-w-4xl mx-auto px-6 pb-20">
-        {mode === 'receive' ? (
+        {!loaded ? (
+          <div className="py-24 text-center text-[11px] uppercase tracking-[0.25em] text-stone-400">
+            Loading progress…
+          </div>
+        ) : mode === 'receive' ? (
           <Trainer
             unlocked={unlocked}
             stats={stats}
@@ -622,8 +738,10 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
   const [phase, setPhase] = useState('playing');
   // Stats for the just-completed batch (set when phase flips to 'summary')
   const [batchStats, setBatchStats] = useState(null);
-  // History of completed batch summaries (for tiny trend strip)
+  // History of completed batch summaries (for tiny trend strip and the at-speed check)
   const [history, setHistory] = useState([]);
+  // Letters this batch is drilling (see selectFocusLetters). Empty = free practice.
+  const [focusLetters, setFocusLetters] = useState([]);
   // Visual playing flag — driven by setTimeouts pegged to audio-clock events. Best-effort,
   // because React renders aren't sample-precise. Audio is canonical.
   const [isPlaying, setIsPlaying] = useState(false);
@@ -653,6 +771,10 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
   const statsRef = useRef(stats);
   const wordBreaksRef = useRef(wordBreaks);
   const flowModeRef = useRef(flowMode);
+  const historyRef = useRef([]);
+  // Focus set for the batch currently on the tape — stamped by buildBatchTape so finishBatch
+  // can report on the letters it actually drilled, even if state has moved on.
+  const focusRef = useRef([]);
   const wrongFlashTimerRef = useRef(null);
   const isPlayingTimerRef = useRef(null); // setTimeout that flips isPlaying back to false
   const pressedKeyTimerRef = useRef(null); // setTimeout that clears the pressedKey highlight
@@ -665,6 +787,7 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
   statsRef.current = stats;
   wordBreaksRef.current = wordBreaks;
   flowModeRef.current = flowMode;
+  historyRef.current = history;
   pausedRef.current = paused;
   phaseRef.current = phase;
 
@@ -676,12 +799,21 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
   const buildBatchTape = () => {
     const entries = [];
     const includeBreaks = wordBreaksRef.current;
+    // Pick the batch's drill letters up front so the whole batch shares one focus — switching
+    // target mid-batch would make the summary meaningless and the strip above the tape a lie.
+    // Batch history is session-scoped (not persisted), so a fresh page load starts out
+    // targeting until a couple of batches establish the speed picture.
+    const focus = selectFocusLetters(unlockedRef.current, statsRef.current, {
+      atSpeed: isAtGoalSpeed(historyRef.current),
+    });
+    focusRef.current = focus;
+    setFocusLetters(focus);
     let lastChar = null;
     for (let w = 0; w < BATCH_WORD_COUNT; w++) {
       const wordLen = BATCH_WORD_MIN_LEN +
         Math.floor(Math.random() * (BATCH_WORD_MAX_LEN - BATCH_WORD_MIN_LEN + 1));
       for (let i = 0; i < wordLen; i++) {
-        const ch = pickNextLetter(unlockedRef.current, statsRef.current, lastChar);
+        const ch = pickBatchLetter(unlockedRef.current, statsRef.current, focus, lastChar);
         entries.push({
           id: nextIdRef.current++, kind: 'letter', char: ch,
           answered: false, mistakes: 0,
@@ -815,6 +947,23 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
       .sort((a, b) => b.mistakes - a.mistakes)
       .slice(0, 5);
 
+    // How the drilled letters actually went, so the targeting is legible rather than magic.
+    // A letter that was sent but never typed (possible in run mode, where the stream doesn't
+    // wait) counts as missed — same convention as firstTryAcc above.
+    const focusResults = focusRef.current.map(ch => {
+      const sent = letters.filter(e => e.char === ch);
+      const missed = sent.filter(e => !e.answered || (e.mistakes || 0) > 0).length;
+      const cleanMs = sent
+        .filter(e => e.answered && e.correct && typeof e.ms === 'number')
+        .map(e => e.ms);
+      return {
+        char: ch,
+        count: sent.length,
+        missed,
+        avgMs: cleanMs.length ? cleanMs.reduce((a, b) => a + b, 0) / cleanMs.length : null,
+      };
+    });
+
     const summary = {
       totalLetters,
       totalMistakes,
@@ -824,6 +973,7 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
       percentOfGoal,
       goalWpm: wpm,
       problems,
+      focus: focusResults,
     };
     setBatchStats(summary);
     setHistory(h => [...h.slice(-9), { acc: firstTryAcc, achievedWpm, goalWpm: wpm }]);
@@ -1138,11 +1288,14 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
 
       {phase === 'playing' ? (
         <>
+          <FocusStrip focus={focusLetters} stats={stats} />
+
           <Tape entries={visibleEntries} cursor={cursor - windowStart} playing={playing - windowStart} wrongFlash={wrongFlash} />
 
           <OnScreenKeyboard
             unlocked={unlocked}
             stats={stats}
+            focus={focusLetters}
             currentEntry={tape[cursor]}
             pressedKey={pressedKey}
             lastWrongKey={lastWrongKey}
@@ -1201,6 +1354,51 @@ function Trainer({ unlocked, stats, recordSample, wpm, wordBreaks, flowMode, tog
   );
 }
 
+// ---------- FOCUS STRIP ----------
+// Names the letters this batch is drilling, and why. When nothing is being targeted it says so
+// rather than vanishing — the absence of a focus is itself information ("you're clean and at
+// speed, this batch is even practice").
+const FOCUS_REASON_LABEL = {
+  new: 'new letter',
+  misses: 'miskeyed',
+  slow: 'slow',
+  shaky: 'shaky',
+  trailing: 'trailing',
+};
+
+function FocusStrip({ focus, stats }) {
+  if (!focus || focus.length === 0) {
+    return (
+      <div className="flex items-center justify-center gap-2 mb-2 text-[10px] uppercase tracking-[0.2em] text-stone-400">
+        <span>Even practice — nothing needs drilling</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center justify-center gap-2 flex-wrap mb-2">
+      <span className="text-[10px] uppercase tracking-[0.25em] text-stone-500">Focus</span>
+      {focus.map(ch => {
+        const d = letterDiagnostic(ch, stats);
+        return (
+          <div
+            key={ch}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-full border bg-white"
+            style={{ borderColor: '#1a1a1a', boxShadow: '0 0 0 3px rgba(26,26,26,0.06)' }}
+            title={`${ch} is coming up more often this batch`}
+          >
+            <span className="display text-base font-bold leading-none">{ch}</span>
+            <span className="mono text-[10px] text-stone-500 leading-none">{renderMorse(MORSE[ch])}</span>
+            <span className="text-[10px] uppercase tracking-wider text-stone-500 leading-none">
+              {FOCUS_REASON_LABEL[d.reason]}
+              {d.avgMs != null ? ` · ${Math.round(d.avgMs)}ms` : ''}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---------- ON-SCREEN KEYBOARD ----------
 // QWERTY layout for click/tap input. Each key shows the letter and its morse pattern.
 // Colors mirror the bottom KeyboardPanel — locked letters are greyed out and unclickable;
@@ -1211,10 +1409,11 @@ const KEYBOARD_ROWS = [
   ['Z','X','C','V','B','N','M'],
 ];
 
-function OnScreenKeyboard({ unlocked, stats, currentEntry, pressedKey, lastWrongKey, onKeyClick }) {
+function OnScreenKeyboard({ unlocked, stats, focus = [], currentEntry, pressedKey, lastWrongKey, onKeyClick }) {
   const isWordBreak = currentEntry?.kind === 'word';
   // Hints removed: with no replay-on-error, every entry is one-shot and there's no escalation.
-  const expectedKey = null;
+  // The ring that used to mark the expected key now marks the batch's focus letters instead —
+  // it says "these are coming up more", not "press this next", so it gives nothing away.
   const hintWordBreak = false;
 
   const colorFor = (c) => {
@@ -1244,7 +1443,7 @@ function OnScreenKeyboard({ unlocked, stats, currentEntry, pressedKey, lastWrong
           {row.map(c => {
             const locked = !unlocked.includes(c);
             const { bg, color, border } = colorFor(c);
-            const isExpected = expectedKey === c;
+            const isFocus = !locked && focus.includes(c);
             const isPressed = pressedKey === c;
             const isWrong = lastWrongKey === c;
             return (
@@ -1258,11 +1457,11 @@ function OnScreenKeyboard({ unlocked, stats, currentEntry, pressedKey, lastWrong
                 style={{
                   background: isWrong ? '#fef2f2' : isPressed ? '#1a1a1a' : bg,
                   color: isWrong ? '#991b1b' : isPressed ? '#fff' : color,
-                  borderColor: isWrong ? '#fca5a5' : isExpected ? '#1a1a1a' : border,
-                  borderWidth: isExpected ? '2px' : '1px',
-                  boxShadow: isExpected ? '0 0 0 3px rgba(26,26,26,0.08)' : undefined,
+                  borderColor: isWrong ? '#fca5a5' : isFocus ? '#1a1a1a' : border,
+                  borderWidth: isFocus ? '2px' : '1px',
+                  boxShadow: isFocus ? '0 0 0 3px rgba(26,26,26,0.08)' : undefined,
                 }}
-                title={locked ? `${c} — locked` : `${c} — ${MORSE[c]}`}
+                title={locked ? `${c} — locked` : `${c} — ${MORSE[c]}${isFocus ? ' · focus letter' : ''}`}
                 aria-label={locked ? `${c} (locked)` : c}
               >
                 <span className="display text-base md:text-lg font-bold leading-none">{c}</span>
@@ -1305,7 +1504,7 @@ function BatchSummary({ stats, history, onNext }) {
   if (!stats) return null;
   const {
     totalLetters, totalMistakes, firstTryAcc, avgReactionMs,
-    achievedWpm, percentOfGoal, goalWpm, problems,
+    achievedWpm, percentOfGoal, goalWpm, problems, focus = [],
   } = stats;
 
   const accColor = firstTryAcc >= 0.9 ? '#16a34a' : firstTryAcc >= 0.75 ? '#ca8a04' : '#dc2626';
@@ -1362,6 +1561,31 @@ function BatchSummary({ stats, history, onNext }) {
           )}
         </div>
       </div>
+
+      {/* Drilled letters — how the batch's focus set actually performed */}
+      {focus.length > 0 && (
+        <div className="my-4 p-4 rounded-2xl bg-stone-50 border border-stone-200">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-3">Drilled this batch</div>
+          <div className="flex flex-wrap gap-2">
+            {focus.map(f => (
+              <div
+                key={f.char}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border bg-white"
+                style={{ borderColor: f.missed > 0 ? '#fca5a5' : '#86efac' }}
+              >
+                <span className="display text-lg font-bold">{f.char}</span>
+                <span className="mono text-[10px] text-stone-500">{renderMorse(MORSE[f.char])}</span>
+                <span className="text-xs text-stone-600">
+                  {f.count}×
+                  {' · '}
+                  {f.missed === 0 ? 'clean' : `${f.missed} missed`}
+                  {f.avgMs != null ? ` · ${Math.round(f.avgMs)}ms` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Problem letters */}
       {problems.length > 0 && (
@@ -2626,7 +2850,10 @@ function InfoPanel({ onClose }) {
             <span className="font-medium">Run</span> — the whole batch streams at your goal speed without stopping. Type what you hear into the keyboard, copying behind the audio. Word breaks are inferred — no need to type spaces. Closer to real Morse copy: you can't pause to think, and your typing rhythm becomes part of the practice. Use this once letters feel familiar.
           </p>
           <p className="mt-2">
-            After each batch you'll see your accuracy, average reaction time, and how close you got to your goal speed. You start with just <span className="mono font-bold">E</span> (·) and <span className="mono font-bold">T</span> (—); new letters unlock as you build accuracy and speed.
+            <span className="font-medium">Focused batches</span> — before each batch the trainer ranks your unlocked letters by miskeys and reaction time, takes the weakest one or two, and makes them roughly a third of what you'll hear. They're named above the tape and ringed on the keyboard, with the reason they were picked. Once every letter is clean <em>and</em> you're holding close to your goal speed, targeting switches off and batches go back to even practice across the whole alphabet.
+          </p>
+          <p className="mt-2">
+            After each batch you'll see your accuracy, average reaction time, how close you got to your goal speed, and how the drilled letters went. You start with just <span className="mono font-bold">E</span> (·) and <span className="mono font-bold">T</span> (—); new letters unlock as you build accuracy and speed.
           </p>
         </div>
         <div>
