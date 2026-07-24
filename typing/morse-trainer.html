@@ -326,10 +326,13 @@ const FOCUS_MIN_UNLOCKED = 3;
 //   UNLOCK  — "starting to reach" the goal. New letters don't arrive until throughput is
 //             getting there, so the alphabet grows at the speed you can actually copy it,
 //             not just at the speed you can identify letters given unlimited thinking time.
+//             Set below the focus threshold on purpose: this gate is meant to stop runaway
+//             unlocking, not to make you earn each letter twice.
 //   FOCUS   — already there. Targeting only switches off once you're properly at goal.
 // The gap between them is the useful working band: you're unlocking new letters while the
-// trainer is still drilling your weak ones.
-const UNLOCK_SPEED_RATIO = 0.8;
+// trainer is still drilling your weak ones. A wider gap means more of your practice happens
+// in that band, which is where the trainer is most useful.
+const UNLOCK_SPEED_RATIO = 0.7;
 const FOCUS_SPEED_OK_RATIO = 0.9;
 const SPEED_WINDOW = 3;
 
