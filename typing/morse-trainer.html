@@ -327,14 +327,40 @@ const FOCUS_MIN_UNLOCKED = 3;
 //             getting there, so the alphabet grows at the speed you can actually copy it,
 //             not just at the speed you can identify letters given unlimited thinking time.
 //             Set below the focus threshold on purpose: this gate is meant to stop runaway
-//             unlocking, not to make you earn each letter twice.
-//   FOCUS   — already there. Targeting only switches off once you're properly at goal.
+//             unlocking, not to make you earn each letter twice. Eased by alphabet size —
+//             see unlockSpeedRatio.
+//   FOCUS   — already there. Targeting only switches off once you're properly at goal. Not
+//             eased: "am I at my goal" should mean the same thing all the way through.
 // The gap between them is the useful working band: you're unlocking new letters while the
 // trainer is still drilling your weak ones. A wider gap means more of your practice happens
 // in that band, which is where the trainer is most useful.
 const UNLOCK_SPEED_RATIO = 0.7;
 const FOCUS_SPEED_OK_RATIO = 0.9;
 const SPEED_WINDOW = 3;
+
+// Alphabet-size allowance on the unlock gate. Choosing between more alternatives costs
+// reaction time — roughly with log2(n) (Hick's law) — so holding a fixed share of goal WPM
+// quietly gets harder every time a letter unlocks, and the gate turns into a wall at exactly
+// the point where you have the most letters to practise. The requirement therefore eases as
+// the alphabet grows. It's linear in *bits* of choice rather than per letter, because that's
+// the shape of the cost: going 4 → 8 letters is a much bigger jump in difficulty than 20 → 24.
+//
+//   letters:  4     6     8    12    16    20    26
+//   required: 70%   66%   62%   58%   54%   51%   50%
+//
+// Playback speed is untouched — this changes only the bar for introducing a new letter.
+const UNLOCK_SPEED_REF_LETTERS = 4;    // alphabet size the base ratio is calibrated for
+const UNLOCK_SPEED_EASE_PER_BIT = 0.09; // ratio given up per doubling of the alphabet
+const UNLOCK_SPEED_RATIO_FLOOR = 0.5;  // never ask for less than half your goal
+
+function unlockSpeedRatio(unlockedCount) {
+  const n = Math.max(2, unlockedCount || 2);
+  const bits = Math.log2(n + 1) - Math.log2(UNLOCK_SPEED_REF_LETTERS + 1);
+  const eased = UNLOCK_SPEED_RATIO - UNLOCK_SPEED_EASE_PER_BIT * bits;
+  // Clamped both ways: a small alphabet never has to beat the base ratio, and a full one
+  // still has to copy at half its goal.
+  return Math.max(UNLOCK_SPEED_RATIO_FLOOR, Math.min(UNLOCK_SPEED_RATIO, eased));
+}
 
 // Unlocked letters ranked weakest-first.
 function rankLetters(unlocked, stats) {
@@ -543,18 +569,18 @@ function App() {
 
   // Record a sample for the *current* mode
   const recordSample = useCallback((char, correct, ms) => {
-    // Receive gates unlocking on measured throughput; send has no equivalent measure — its
-    // conveyor runs at goal speed whether or not you keep up, so keying a letter correctly
-    // already means you kept pace with it.
-    const atSpeed = mode === 'receive'
-      ? isAtGoalSpeed(batchHistory, UNLOCK_SPEED_RATIO)
-      : true;
     setProgress(prev => {
       const lane = prev[mode];
       const cur = lane.stats[char]?.samples || [];
       const samples = [...cur, { correct, ms }].slice(-30);
       const newStats = { ...lane.stats, [char]: { samples } };
       let newUnlocked = lane.unlocked;
+      // Receive gates unlocking on measured throughput, against a bar that eases as the
+      // alphabet grows. Send has no equivalent measure — its conveyor runs at goal speed
+      // whether or not you keep up, so keying a letter correctly already means you kept pace.
+      const atSpeed = mode === 'receive'
+        ? isAtGoalSpeed(batchHistory, unlockSpeedRatio(lane.unlocked.length))
+        : true;
       // Check unlock
       if (shouldUnlockNext(lane.unlocked, newStats, { atSpeed }) && lane.unlocked.length < INTRO_ORDER.length) {
         const nextChar = INTRO_ORDER.find(c => !lane.unlocked.includes(c));
@@ -2710,6 +2736,8 @@ function ProgressBar({ unlocked, stats, mode, speedRatio }) {
   // Receive gates unlocking on throughput as well as mastery, so show both — a mastery bar
   // sitting at 100% with nothing unlocking would otherwise look broken.
   const showSpeedGate = mode === 'receive' && unlockedCount < total;
+  // The bar the speed gate is actually held to right now, eased for how many letters are open.
+  const gateRatio = unlockSpeedRatio(unlockedCount);
 
   const scores = unlocked.map(c => computeKeyScore(stats[c]?.samples));
   const avgScore = scores.length ? scores.reduce((a,b) => a+b, 0) / scores.length : 0;
@@ -2757,20 +2785,23 @@ function ProgressBar({ unlocked, stats, mode, speedRatio }) {
               className="h-full transition-all duration-700 rounded-full"
               style={{
                 width: `${Math.min(100, (speedRatio ?? 0) * 100)}%`,
-                background: (speedRatio ?? 0) >= UNLOCK_SPEED_RATIO ? '#16a34a' : '#1a1a1a',
+                background: (speedRatio ?? 0) >= gateRatio ? '#16a34a' : '#1a1a1a',
               }}
             />
-            {/* Threshold marker — where the gate opens */}
+            {/* Threshold marker — where the gate opens. Moves left as the alphabet grows. */}
             <div
-              className="absolute top-0 bottom-0 w-px"
-              style={{ left: `${UNLOCK_SPEED_RATIO * 100}%`, background: '#a8a29e' }}
-              title={`${Math.round(UNLOCK_SPEED_RATIO * 100)}% of goal speed`}
+              className="absolute top-0 bottom-0 w-px transition-all duration-700"
+              style={{ left: `${gateRatio * 100}%`, background: '#a8a29e' }}
+              title={`${Math.round(gateRatio * 100)}% of goal speed — eased for ${unlockedCount} letters`}
             />
           </div>
           <p className="text-[11px] text-stone-500 mt-2 leading-relaxed">
-            {avgScore >= UNLOCK_AVG_SCORE && (speedRatio ?? 0) < UNLOCK_SPEED_RATIO
-              ? `Your letters are solid — the next one arrives once recent batches hold ${Math.round(UNLOCK_SPEED_RATIO * 100)}% of your goal speed. Keep practising, or lower the goal in settings.`
-              : `New letters arrive when every letter is quick and clean and your recent batches reach ${Math.round(UNLOCK_SPEED_RATIO * 100)}% of your goal speed.`}
+            {avgScore >= UNLOCK_AVG_SCORE && (speedRatio ?? 0) < gateRatio
+              ? `Your letters are solid — the next one arrives once recent batches hold ${Math.round(gateRatio * 100)}% of your goal speed. Keep practising, or lower the goal in settings.`
+              : `New letters arrive when every letter is quick and clean and your recent batches reach ${Math.round(gateRatio * 100)}% of your goal speed.`}
+            {gateRatio < UNLOCK_SPEED_RATIO && (
+              <span> The bar eases as you unlock more — picking between {unlockedCount} letters costs more reaction time than between {UNLOCK_SPEED_REF_LETTERS}.</span>
+            )}
           </p>
         </div>
       )}
@@ -2946,7 +2977,7 @@ function InfoPanel({ onClose }) {
             After each batch you'll see your accuracy, average reaction time, how close you got to your goal speed, and how the drilled letters went. You start with just <span className="mono font-bold">E</span> (·) and <span className="mono font-bold">T</span> (—).
           </p>
           <p className="mt-2">
-            <span className="font-medium">Unlocking</span> — a new letter arrives only when two things are true: every letter you have is quick and clean, <em>and</em> your recent batches are copying at {Math.round(UNLOCK_SPEED_RATIO * 100)}% of your goal speed. Recognition alone isn't enough — given unlimited thinking time you could collect all 26 and still not copy at speed, so the alphabet grows only as fast as your throughput does. Both gates are shown at the bottom of the page. Changing the goal speed clears the speed picture, so raising it pauses unlocking until you've proved the new pace.
+            <span className="font-medium">Unlocking</span> — a new letter arrives only when two things are true: every letter you have is quick and clean, <em>and</em> your recent batches are copying fast enough. Recognition alone isn't enough — given unlimited thinking time you could collect all 26 and still not copy at speed, so the alphabet grows only as fast as your throughput does. The speed bar starts at {Math.round(UNLOCK_SPEED_RATIO * 100)}% of your goal and eases toward {Math.round(UNLOCK_SPEED_RATIO_FLOOR * 100)}% as the alphabet fills out, because choosing between more letters genuinely costs reaction time — otherwise the gate would tighten every time you learned something. Both gates are shown at the bottom of the page. Changing the goal speed clears the speed picture, so raising it pauses unlocking until you've proved the new pace.
           </p>
         </div>
         <div>
