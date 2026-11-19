@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chip Hike — Grid Map &amp; Clue Recorder</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<style id="pageSize">@page { size: A4 landscape; margin: 10mm; }</style>
+<style>
+  :root { --green:#23a950; --purple:#7413dc; --ink:#111; --muted:#666; --line:#ddd; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; font-family:"Helvetica Neue", Arial, sans-serif; color:var(--ink); }
+  body { display:flex; flex-direction:column; background:#f3f3f3; }
+  button, input, select, textarea { font:inherit; }
+  button { cursor:pointer; border:1px solid #bbb; background:#fff; border-radius:8px; padding:8px 12px; }
+  button.primary { background:var(--purple); color:#fff; border-color:var(--purple); }
+  button.go { background:var(--green); color:#fff; border-color:var(--green); }
+  button.danger { color:#b00020; border-color:#e3a1ab; }
+  button.small { padding:4px 8px; font-size:13px; }
+  button:disabled { opacity:.5; }
+
+  /* ---------- Top bar ---------- */
+  #topbar { display:flex; gap:8px; align-items:center; padding:8px; background:var(--purple); color:#fff; flex-wrap:wrap; }
+  #topbar h1 { font-size:16px; margin:0 auto 0 4px; }
+  #gotoRef { width:110px; padding:6px 8px; border-radius:8px; border:none; }
+  #topbar button { padding:6px 10px; }
+
+  /* ---------- Sheet (map + optional print header/footer) ---------- */
+  #sheet { position:relative; isolation:isolate; z-index:0; flex:1 1 55%; min-height:240px; display:flex; flex-direction:column; background:#fff; }
+  #sheetHead, #sheetFoot { display:none; }
+  #mapWrap { position:relative; flex:1; }
+  #map { position:absolute; inset:0; }
+  #gridSvg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:450; }
+  #gridSvg text { font-size:11px; font-weight:700; fill:#0a3d91; paint-order:stroke; stroke:#fff; stroke-width:3px; }
+
+  /* ---------- Panel ---------- */
+  #panel { position:relative; z-index:1; flex:1 1 45%; min-height:0; overflow:auto; background:#fff; border-top:1px solid var(--line); }
+  #tabs { display:flex; position:sticky; top:0; background:#fff; border-bottom:1px solid var(--line); z-index:5; }
+  #tabs button { flex:1; border:none; border-radius:0; padding:10px 4px; border-bottom:3px solid transparent; }
+  #tabs button.on { border-bottom-color:var(--purple); font-weight:700; }
+  .tab { display:none; padding:12px; }
+  .tab.on { display:block; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 3px; }
+  input[type=text], input[type=number], textarea, select { width:100%; padding:8px; border:1px solid #bbb; border-radius:8px; }
+  textarea { min-height:60px; resize:vertical; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .row > * { flex:1; }
+  .bigref { font-size:30px; font-weight:800; letter-spacing:2px; font-variant-numeric:tabular-nums; }
+  .hint { font-size:13px; color:var(--muted); }
+  .warn { font-size:13px; color:#a35a00; }
+  .box { border:1px solid var(--line); border-radius:10px; padding:10px; margin:8px 0; }
+  .clue { display:flex; gap:10px; align-items:flex-start; }
+  .clue .num { flex:0 0 32px; height:32px; border-radius:50%; background:var(--purple); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; }
+  .clue .num.finish { background:#f2b705; color:#000; }
+  .clue .body { flex:1; min-width:0; }
+  .clue .ref { font-weight:800; font-variant-numeric:tabular-nums; }
+  .clue img { width:64px; height:64px; object-fit:cover; border-radius:6px; }
+  .actions { display:flex; gap:4px; flex-wrap:wrap; margin-top:6px; }
+  .pin { width:28px; height:28px; border-radius:50%; background:var(--purple); color:#fff; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; }
+  .pin.finish { background:#f2b705; font-size:16px; }
+  .pin.draft { background:var(--green); }
+  #toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:#222; color:#fff; padding:10px 16px; border-radius:20px; z-index:9999; display:none; }
+
+  /* ---------- Printable sheets (leader / scout) ---------- */
+  #printSheet { display:none; padding:0; }
+  #printSheet h2 { margin:0 0 4px; }
+  #printSheet table { width:100%; border-collapse:collapse; font-size:13px; }
+  #printSheet th, #printSheet td { border:1px solid #444; padding:6px; vertical-align:top; text-align:left; }
+  #printSheet .ansbox { height:28px; }
+  .digits { display:flex; gap:6px; margin-top:8px; }
+  .digits div { width:46px; height:56px; border:2px solid #000; border-radius:6px; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; font-size:12px; padding-bottom:3px; }
+
+  /* ---------- Print-preview mode for the map ---------- */
+  body.pm #topbar, body.pm #panel { display:none; }
+  body.pm { background:#888; align-items:center; overflow:auto; padding:12px; }
+  body.pm #sheet { flex:none; width:277mm; height:190mm; box-shadow:0 2px 14px rgba(0,0,0,.3); padding:3mm; }
+  body.pm.portrait #sheet { width:190mm; height:277mm; }
+  body.pm #sheetHead { display:flex; justify-content:space-between; align-items:flex-end; border-bottom:.4mm solid #222; padding-bottom:1.5mm; margin-bottom:2mm; }
+  body.pm #sheetHead h2 { margin:0; font-size:20px; }
+  body.pm #sheetFoot { display:block; font-size:11px; padding-top:1.5mm; }
+  body.pm #mapWrap { border:.4mm solid #222; }
+  #pmBar { display:none; }
+  body.pm #pmBar { display:flex; position:fixed; top:8px; right:8px; z-index:2000; gap:6px; flex-wrap:wrap; background:#fff; padding:8px; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.3); max-width:340px; }
+
+  body.ps #topbar, body.ps #sheet, body.ps #panel { display:none; }
+  body.ps #printSheet { display:block; background:#fff; padding:12px; }
+  body.ps #psBar { display:flex; gap:6px; margin-bottom:12px; }
+
+  @media print {
+    #pmBar, #psBar, .leaflet-control-zoom { display:none !important; }
+    body.pm, body.ps { background:#fff; padding:0; }
+    body.pm #sheet { box-shadow:none; padding:0; }
+  }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>🍟 Chip Hike</h1>
+  <input id="gotoRef" type="text" inputmode="numeric" placeholder="Go to ref" maxlength="7">
+  <button id="gotoBtn">Go</button>
+  <button id="printMapBtn">🖨 Print map</button>
+</div>
+
+<div id="sheet">
+  <div id="sheetHead">
+    <h2 id="sheetTitle">Chip Hike</h2>
+    <div class="hint" id="sheetSub"></div>
+  </div>
+  <div id="mapWrap">
+    <div id="map"></div>
+    <svg id="gridSvg"></svg>
+  </div>
+  <div id="sheetFoot"></div>
+</div>
+
+<div id="pmBar">
+  <strong style="width:100%">Print preview — pan &amp; zoom to frame the area</strong>
+  <button id="pmOrient">↻ Portrait / landscape</button>
+  <label style="margin:0;display:flex;gap:4px;align-items:center;color:#000"><input type="checkbox" id="pmShowClues"> Show clue pins</label>
+  <button class="primary" id="pmPrint">Print</button>
+  <button id="pmExit">Done</button>
+</div>
+
+<div id="panel">
+  <div id="tabs">
+    <button data-tab="record" class="on">📍 Record</button>
+    <button data-tab="clues">📋 Clues</button>
+    <button data-tab="sheets">🖨 Sheets</button>
+    <button data-tab="settings">⚙️ Grid</button>
+  </div>
+
+  <!-- RECORD -->
+  <div class="tab on" id="tab-record">
+    <div class="row">
+      <button class="go" id="gpsBtn">📍 Get my location</button>
+      <button id="gpsStop" style="flex:0 0 auto">Stop GPS</button>
+    </div>
+    <div class="box" style="text-align:center">
+      <div class="bigref" id="draftRef">--- ---</div>
+      <div class="hint" id="draftInfo">Tap “Get my location”, or tap the map to drop a pin. You can drag the green pin to fine-tune.</div>
+    </div>
+    <form id="clueForm">
+      <input type="hidden" id="editId">
+      <label>Type</label>
+      <select id="fKind">
+        <option value="stop">Clue stop</option>
+        <option value="finish">🍟 Chip spot (finish)</option>
+      </select>
+      <label>What's there (for leaders)</label>
+      <input type="text" id="fPlace" placeholder="e.g. Bench by the bandstand, Parade Gardens">
+      <label>Question for the scouts</label>
+      <textarea id="fQuestion" placeholder="e.g. What year did Fred die?"></textarea>
+      <label>Answer</label>
+      <input type="text" id="fAnswer" placeholder="e.g. 1972">
+      <label>Notes</label>
+      <input type="text" id="fNotes" placeholder="Optional — access, safety, road crossings…">
+      <label>Photo (optional)</label>
+      <input type="file" id="fPhoto" accept="image/*" capture="environment">
+      <img id="fPhotoPrev" style="display:none;max-width:120px;border-radius:8px;margin-top:6px">
+      <div class="row" style="margin-top:12px">
+        <button type="submit" class="primary" id="saveBtn">Save clue</button>
+        <button type="button" id="cancelEdit" style="display:none">Cancel edit</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- CLUES -->
+  <div class="tab" id="tab-clues">
+    <div id="digitBox"></div>
+    <div id="clueList"></div>
+  </div>
+
+  <!-- SHEETS -->
+  <div class="tab" id="tab-sheets">
+    <p class="hint">Printable sheets for the hike. The map print is under 🖨 at the top.</p>
+    <label style="display:flex;gap:6px;align-items:center;color:#000"><input type="checkbox" id="optAllRefs" checked> Scout sheet shows every stop's grid ref</label>
+    <label style="display:flex;gap:6px;align-items:center;color:#000"><input type="checkbox" id="optDigits" checked> Scout sheet includes the “secret chip ref” digit boxes</label>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="scoutSheetBtn">Scout sheet</button>
+      <button id="leaderSheetBtn">Leader sheet (answers)</button>
+    </div>
+    <h3>Backup</h3>
+    <p class="hint">Clues live in this browser only. Export a copy before you clear your browser or switch phone.</p>
+    <div class="row">
+      <button id="exportBtn">⬇ Download JSON</button>
+      <button id="copyBtn">Copy JSON</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label style="margin:0">Import JSON <input type="file" id="importFile" accept="application/json,.json"></label>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button class="danger" id="clearBtn">Delete all clues</button>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="tab" id="tab-settings">
+    <label>Map title</label>
+    <input type="text" id="sTitle">
+    <label>Grid square size</label>
+    <select id="sSize">
+      <option value="50">50 m</option>
+      <option value="100">100 m (recommended for a town hike)</option>
+      <option value="200">200 m</option>
+      <option value="500">500 m</option>
+      <option value="1000">1 km (like OS)</option>
+    </select>
+    <label>Grid origin — the 00 00 corner (bottom-left)</label>
+    <div class="row">
+      <input type="number" step="any" id="sLat" placeholder="Latitude">
+      <input type="number" step="any" id="sLon" placeholder="Longitude">
+    </div>
+    <p class="hint">This is a made-up grid, not the OS one. Lines are numbered 00–99 east and north from the origin, so a 6-figure ref is <b>EEe NNn</b>: the two-digit line number plus tenths across the square. Clues store their real position, so changing the grid just changes their refs — reprint any sheets afterwards.</p>
+    <div class="row">
+      <button id="originHere">Put 00 00 at the bottom-left of the current view</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="saveSettings">Save grid</button>
+      <button id="resetSettings">Reset to Bath default</button>
+    </div>
+  </div>
+</div>
+
+<div id="printSheet">
+  <div id="psBar">
+    <button class="primary" onclick="window.print()">Print</button>
+    <button id="psExit">Done</button>
+  </div>
+  <div id="psBody"></div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+"use strict";
+// ======================================================================
+//  Storage (localStorage only)
+// ======================================================================
+const KEY = "chipHike.v1";
+const DEFAULTS = { title: "51st Bath — Chip Hike", lat0: 51.360, lon0: -2.400, size: 100 };
+let state = load();
+
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s && Array.isArray(s.clues)) return { settings: Object.assign({}, DEFAULTS, s.settings), clues: s.clues };
+  } catch (e) {}
+  return { settings: Object.assign({}, DEFAULTS), clues: [] };
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(state)); return true; }
+  catch (e) { toast("⚠️ Couldn't save — storage full? Try removing some photos."); return false; }
+}
+function toast(msg, ms = 2500) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = "none", ms);
+}
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
+// ======================================================================
+//  The grid: simple local flat projection from an origin point
+// ======================================================================
+const M_PER_DEG_LAT = 110574;
+function mPerDegLon() { return 111320 * Math.cos(state.settings.lat0 * Math.PI / 180); }
+function toXY(lat, lon) {
+  const s = state.settings;
+  return { x: (lon - s.lon0) * mPerDegLon(), y: (lat - s.lat0) * M_PER_DEG_LAT };
+}
+function fromXY(x, y) {
+  const s = state.settings;
+  return [s.lat0 + y / M_PER_DEG_LAT, s.lon0 + x / mPerDegLon()];
+}
+function pad2(n) { return String(((n % 100) + 100) % 100).padStart(2, "0"); }
+function axisRef(v) {
+  const size = state.settings.size;
+  const line = Math.floor(v / size);
+  const tenth = Math.min(9, Math.floor((v - line * size) / size * 10));
+  return pad2(line) + tenth;
+}
+function gridRef(lat, lon) {
+  const { x, y } = toXY(lat, lon);
+  return axisRef(x) + " " + axisRef(y);
+}
+function inGrid(lat, lon) {
+  const { x, y } = toXY(lat, lon), max = state.settings.size * 100;
+  return x >= 0 && y >= 0 && x < max && y < max;
+}
+function refToLatLng(str) {
+  const d = String(str).replace(/\D/g, "");
+  if (d.length !== 6) return null;
+  const size = state.settings.size;
+  const x = (parseInt(d.slice(0, 2)) + (parseInt(d[2]) + 0.5) / 10) * size;
+  const y = (parseInt(d.slice(3, 5)) + (parseInt(d[5]) + 0.5) / 10) * size;
+  return fromXY(x, y);
+}
+
+// ======================================================================
+//  Map
+// ======================================================================
+const map = L.map("map", { zoomControl: false, zoomSnap: 0.25, zoomDelta: 0.5 }).setView([51.3813, -2.3590], 15);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+L.control.zoom({ position: "bottomright" }).addTo(map);
+L.control.scale({ imperial: false, position: "topright" }).addTo(map);
+
+const svg = document.getElementById("gridSvg");
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs, text) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+function drawGrid() {
+  const size = state.settings.size;
+  const W = map.getSize().x, H = map.getSize().y;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = "";
+  const b = map.getBounds();
+  const sw = toXY(b.getSouth(), b.getWest()), ne = toXY(b.getNorth(), b.getEast());
+  let i0 = Math.ceil(sw.x / size), i1 = Math.floor(ne.x / size);
+  let j0 = Math.ceil(sw.y / size), j1 = Math.floor(ne.y / size);
+  // Thin out if zoomed far out
+  const n = Math.max(i1 - i0, j1 - j0);
+  const step = n > 120 ? 10 : n > 60 ? 5 : n > 30 ? 2 : 1;
+  const s = state.settings;
+
+  const lines = svgEl("g", {}), labels = svgEl("g", {});
+  for (let i = Math.ceil(i0 / step) * step; i <= i1; i += step) {
+    const px = map.latLngToContainerPoint([s.lat0, fromXY(i * size, 0)[1]]).x;
+    const major = i % 10 === 0;
+    lines.appendChild(svgEl("line", { x1: px, x2: px, y1: 0, y2: H, stroke: "#0a3d91", "stroke-width": major ? 1.6 : 0.8, "stroke-opacity": major ? 0.9 : 0.6 }));
+    if (px > 24 && px < W - 40) {
+      labels.appendChild(svgEl("text", { x: px + 2, y: 12 }, pad2(i)));
+      labels.appendChild(svgEl("text", { x: px + 2, y: H - 22 }, pad2(i)));
+    }
+  }
+  for (let j = Math.ceil(j0 / step) * step; j <= j1; j += step) {
+    const py = map.latLngToContainerPoint([fromXY(0, j * size)[0], s.lon0]).y;
+    const major = j % 10 === 0;
+    lines.appendChild(svgEl("line", { x1: 0, x2: W, y1: py, y2: py, stroke: "#0a3d91", "stroke-width": major ? 1.6 : 0.8, "stroke-opacity": major ? 0.9 : 0.6 }));
+    if (py > 26 && py < H - 36) {
+      labels.appendChild(svgEl("text", { x: 3, y: py - 3 }, pad2(j)));
+      labels.appendChild(svgEl("text", { x: W - 18, y: py - 3 }, pad2(j)));
+    }
+  }
+  svg.appendChild(lines); svg.appendChild(labels);
+}
+map.on("move zoom resize viewreset", drawGrid);
+map.on("zoomstart", () => svg.style.visibility = "hidden");
+map.on("zoomend", () => { svg.style.visibility = "visible"; drawGrid(); });
+
+// ---------- Clue pins ----------
+const clueLayer = L.layerGroup().addTo(map);
+function pinIcon(c, i) {
+  const fin = c.kind === "finish";
+  return L.divIcon({ className: "", iconSize: [28, 28], iconAnchor: [14, 14],
+    html: `<div class="pin ${fin ? "finish" : ""}">${fin ? "🍟" : i}</div>` });
+}
+function stopNumbers() {
+  const nums = {}; let n = 0;
+  state.clues.forEach(c => { if (c.kind !== "finish") nums[c.id] = ++n; });
+  return nums;
+}
+function drawPins() {
+  clueLayer.clearLayers();
+  const nums = stopNumbers();
+  state.clues.forEach(c => {
+    L.marker([c.lat, c.lon], { icon: pinIcon(c, nums[c.id]) })
+      .bindPopup(`<b>${c.kind === "finish" ? "🍟 Chip spot" : "Stop " + nums[c.id]}</b> — ${gridRef(c.lat, c.lon)}<br>${esc(c.place)}<br><i>${esc(c.question)}</i>`)
+      .addTo(clueLayer);
+  });
+}
+
+// ---------- Tapping the map ----------
+map.on("click", e => {
+  if (currentTab === "record") { setDraft(e.latlng.lat, e.latlng.lng, null, "Map pin"); return; }
+  L.popup().setLatLng(e.latlng)
+    .setContent(`<div style="font-size:20px;font-weight:800">${gridRef(e.latlng.lat, e.latlng.lng)}</div>
+      <button class="small" onclick="addClueAt(${e.latlng.lat},${e.latlng.lng})">Add clue here</button>`)
+    .openOn(map);
+});
+window.addClueAt = (lat, lon) => { map.closePopup(); switchTab("record"); setDraft(lat, lon, null, "Map pin"); };
+
+// ---------- Go to ref ----------
+const gotoMarker = L.circleMarker([0, 0], { radius: 10, color: "#e00", weight: 3, fill: false });
+document.getElementById("gotoBtn").onclick = () => {
+  const ll = refToLatLng(document.getElementById("gotoRef").value);
+  if (!ll) return toast("Enter a 6-figure ref, e.g. 283 231");
+  gotoMarker.setLatLng(ll).addTo(map);
+  map.setView(ll, Math.max(map.getZoom(), 16));
+};
+document.getElementById("gotoRef").addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("gotoBtn").click(); });
+
+// ======================================================================
+//  Tabs
+// ======================================================================
+let currentTab = "record";
+function switchTab(t) {
+  currentTab = t;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  document.querySelectorAll(".tab").forEach(d => d.classList.toggle("on", d.id === "tab-" + t));
+  if (t === "clues") renderClues();
+  if (t === "settings") fillSettings();
+}
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+
+// ======================================================================
+//  Recording
+// ======================================================================
+let draft = null;          // {lat, lon, acc, src}
+let watchId = null, followGps = true;
+const draftMarker = L.marker([0, 0], { draggable: true, zIndexOffset: 1000,
+  icon: L.divIcon({ className: "", iconSize: [28, 28], iconAnchor: [14, 14], html: '<div class="pin draft">＋</div>' }) });
+const accCircle = L.circle([0, 0], { radius: 1, color: "#23a950", weight: 1, fillOpacity: 0.12 });
+draftMarker.on("dragstart", () => { followGps = false; });
+draftMarker.on("dragend", () => { const p = draftMarker.getLatLng(); setDraft(p.lat, p.lng, null, "Dragged pin"); });
+
+function setDraft(lat, lon, acc, src) {
+  draft = { lat, lon, acc, src };
+  draftMarker.setLatLng([lat, lon]).addTo(map);
+  if (acc) accCircle.setLatLng([lat, lon]).setRadius(acc).addTo(map); else accCircle.remove();
+  document.getElementById("draftRef").textContent = gridRef(lat, lon);
+  let info = src + (acc ? ` · ±${Math.round(acc)} m` : "");
+  if (acc && acc > 25) info += " — wait a moment for a better fix";
+  if (!inGrid(lat, lon)) info += " ⚠️ outside the 00–99 grid; move the origin in ⚙️ Grid";
+  document.getElementById("draftInfo").textContent = info;
+}
+document.getElementById("gpsBtn").onclick = () => {
+  if (!navigator.geolocation) return toast("This browser has no GPS access");
+  stopGps(); followGps = true;
+  document.getElementById("draftInfo").textContent = "Finding you…";
+  watchId = navigator.geolocation.watchPosition(p => {
+    if (!followGps) return;
+    setDraft(p.coords.latitude, p.coords.longitude, p.coords.accuracy, "GPS");
+    map.setView([p.coords.latitude, p.coords.longitude], Math.max(map.getZoom(), 17));
+  }, err => toast("GPS error: " + err.message, 4000), { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+};
+function stopGps() { if (watchId != null) navigator.geolocation.clearWatch(watchId); watchId = null; }
+document.getElementById("gpsStop").onclick = () => { stopGps(); followGps = false; toast("GPS stopped — pin stays put"); };
+
+// ---------- Photo (shrunk so localStorage doesn't fill up) ----------
+let draftPhoto = null;
+document.getElementById("fPhoto").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  draftPhoto = await shrinkImage(f, 640, 0.6);
+  const prev = document.getElementById("fPhotoPrev");
+  prev.src = draftPhoto; prev.style.display = "block";
+};
+function shrinkImage(file, maxDim, q) {
+  return new Promise((res, rej) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url); res(c.toDataURL("image/jpeg", q));
+    };
+    img.onerror = rej; img.src = url;
+  });
+}
+
+// ---------- Save / edit ----------
+const F = id => document.getElementById(id);
+F("clueForm").onsubmit = e => {
+  e.preventDefault();
+  if (!draft) return toast("Set a location first (GPS or tap the map)");
+  const id = F("editId").value;
+  const existing = id ? state.clues.find(c => c.id === id) : null;
+  const kind = F("fKind").value;
+  if (kind === "finish") state.clues.forEach(c => { if (c.kind === "finish" && c.id !== id) c.kind = "stop"; });
+  const clue = Object.assign(existing || { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), created: new Date().toISOString(), digitPos: null, hint: "" }, {
+    kind, lat: draft.lat, lon: draft.lon, acc: draft.acc,
+    place: F("fPlace").value.trim(), question: F("fQuestion").value.trim(),
+    answer: F("fAnswer").value.trim(), notes: F("fNotes").value.trim(),
+    photo: draftPhoto ?? (existing ? existing.photo : null)
+  });
+  if (!existing) state.clues.push(clue);
+  if (save()) {
+    toast(existing ? "Clue updated" : `Saved at ${gridRef(clue.lat, clue.lon)}`);
+    resetForm(); drawPins();
+  }
+};
+function resetForm() {
+  F("clueForm").reset(); F("editId").value = ""; draftPhoto = null;
+  F("fPhotoPrev").style.display = "none"; F("cancelEdit").style.display = "none";
+  F("saveBtn").textContent = "Save clue";
+  draft = null; draftMarker.remove(); accCircle.remove(); stopGps();
+  F("draftRef").textContent = "--- ---";
+  F("draftInfo").textContent = "Tap “Get my location”, or tap the map to drop a pin. You can drag the green pin to fine-tune.";
+}
+F("cancelEdit").onclick = resetForm;
+function editClue(id) {
+  const c = state.clues.find(c => c.id === id); if (!c) return;
+  switchTab("record"); stopGps(); followGps = false;
+  F("editId").value = c.id; F("fKind").value = c.kind; F("fPlace").value = c.place;
+  F("fQuestion").value = c.question; F("fAnswer").value = c.answer; F("fNotes").value = c.notes || "";
+  draftPhoto = null;
+  if (c.photo) { F("fPhotoPrev").src = c.photo; F("fPhotoPrev").style.display = "block"; }
+  F("saveBtn").textContent = "Update clue"; F("cancelEdit").style.display = "";
+  setDraft(c.lat, c.lon, c.acc, "Saved position");
+  map.setView([c.lat, c.lon], Math.max(map.getZoom(), 17));
+}
+
+// ======================================================================
+//  Clue list + secret chip-ref digits
+// ======================================================================
+const LETTERS = "ABCDEF";
+const ORD = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th", "10th"];
+function finishClue() { return state.clues.find(c => c.kind === "finish"); }
+function finishDigits() { const f = finishClue(); return f ? gridRef(f.lat, f.lon).replace(" ", "") : null; }
+function suggestHint(c) {
+  const fd = finishDigits();
+  if (c.digitPos == null || !fd) return "";
+  const need = fd[c.digitPos], ans = (c.answer || "").replace(/\D/g, "");
+  const k = ans.indexOf(need);
+  return k >= 0 ? `Letter ${LETTERS[c.digitPos]} is the ${ORD[k] || (k + 1) + "th"} digit of your answer` : "";
+}
+function hintFor(c) { return c.hint || suggestHint(c); }
+
+function renderDigitBox() {
+  const box = F("digitBox"), fd = finishDigits();
+  if (!fd) { box.innerHTML = `<div class="box hint">Add a 🍟 <b>Chip spot</b> (type “finish”) and the app will help you hide its grid ref in the answers — each stop's answer gives the scouts one digit (A–F).</div>`; return; }
+  const stops = state.clues.filter(c => c.kind !== "finish");
+  let html = `<div class="box"><b>Secret chip ref: ${fd.slice(0,3)} ${fd.slice(3)}</b><div class="digits">`;
+  for (let p = 0; p < 6; p++) {
+    const who = stops.find(c => c.digitPos === p);
+    html += `<div style="${who ? "" : "border-color:#e3a1ab"}"><span style="font-size:22px;font-weight:800">${fd[p]}</span>${LETTERS[p]}</div>`;
+  }
+  html += `</div><p class="hint">Pick which letter each stop gives, below. Red boxes have no stop yet.</p>
+    <button class="small" onclick="autoAssign()">Auto-assign letters</button></div>`;
+  box.innerHTML = html;
+}
+window.autoAssign = () => {
+  const fd = finishDigits(); if (!fd) return;
+  const stops = state.clues.filter(c => c.kind !== "finish");
+  stops.forEach(c => { c.digitPos = null; c.hint = ""; });
+  const used = new Set();
+  for (let p = 0; p < 6; p++) {   // prefer a stop whose answer contains the digit
+    let c = stops.find(s => !used.has(s.id) && (s.answer || "").replace(/\D/g, "").includes(fd[p]))
+         || stops.find(s => !used.has(s.id));
+    if (!c) break;
+    c.digitPos = p; used.add(c.id);
+  }
+  save(); renderClues();
+};
+
+function renderClues() {
+  renderDigitBox();
+  const list = F("clueList"), nums = stopNumbers(), fd = finishDigits();
+  if (!state.clues.length) { list.innerHTML = `<p class="hint">No clues yet — record some from the 📍 Record tab.</p>`; return; }
+  list.innerHTML = state.clues.map((c, i) => {
+    const fin = c.kind === "finish";
+    let digitUi = "";
+    if (!fin && fd) {
+      const opts = `<option value="">— no digit —</option>` + [...LETTERS].map((L, p) => `<option value="${p}" ${c.digitPos === p ? "selected" : ""}>Gives letter ${L} (= ${fd[p]})</option>`).join("");
+      const need = c.digitPos != null ? fd[c.digitPos] : null;
+      const ansD = (c.answer || "").replace(/\D/g, "");
+      const warn = need != null && !c.hint && !ansD.includes(need)
+        ? `<div class="warn">The answer has no “${need}” in it — write your own instruction (e.g. “add up the digits”).</div>` : "";
+      digitUi = `<select onchange="setDigit('${c.id}', this.value)" style="margin-top:6px">${opts}</select>
+        ${c.digitPos != null ? `<input type="text" placeholder="${esc(suggestHint(c) || "How do they get the digit?")}" value="${esc(c.hint)}" onchange="setHint('${c.id}', this.value)" style="margin-top:4px">` : ""}${warn}`;
+    }
+    return `<div class="box clue">
+      <div class="num ${fin ? "finish" : ""}">${fin ? "🍟" : nums[c.id]}</div>
+      <div class="body">
+        <div class="ref">${gridRef(c.lat, c.lon)} <span class="hint">${c.acc ? "±" + Math.round(c.acc) + " m" : ""}</span></div>
+        <div>${esc(c.place) || "<i class='hint'>No description</i>"}</div>
+        ${c.question ? `<div><b>Q:</b> ${esc(c.question)}</div>` : ""}
+        ${c.answer ? `<div><b>A:</b> ${esc(c.answer)}</div>` : ""}
+        ${c.notes ? `<div class="hint">${esc(c.notes)}</div>` : ""}
+        ${digitUi}
+        <div class="actions">
+          <button class="small" onclick="moveClue(${i},-1)" ${i === 0 ? "disabled" : ""}>↑</button>
+          <button class="small" onclick="moveClue(${i},1)" ${i === state.clues.length - 1 ? "disabled" : ""}>↓</button>
+          <button class="small" onclick="showClue('${c.id}')">Map</button>
+          <button class="small" onclick="editClue('${c.id}')">Edit</button>
+          <button class="small danger" onclick="delClue('${c.id}', this)">Delete</button>
+        </div>
+      </div>
+      ${c.photo ? `<img src="${c.photo}" alt="">` : ""}
+    </div>`;
+  }).join("");
+}
+window.editClue = editClue;
+window.setDigit = (id, v) => {
+  const c = state.clues.find(c => c.id === id);
+  const p = v === "" ? null : +v;
+  if (p != null) state.clues.forEach(o => { if (o.digitPos === p && o.id !== id) { o.digitPos = null; o.hint = ""; } });
+  c.digitPos = p; c.hint = ""; save(); renderClues();
+};
+window.setHint = (id, v) => { state.clues.find(c => c.id === id).hint = v.trim(); save(); renderClues(); };
+window.moveClue = (i, d) => {
+  const j = i + d; [state.clues[i], state.clues[j]] = [state.clues[j], state.clues[i]];
+  save(); renderClues(); drawPins();
+};
+window.showClue = id => {
+  const c = state.clues.find(c => c.id === id);
+  map.setView([c.lat, c.lon], 17);
+  clueLayer.eachLayer(m => { const p = m.getLatLng(); if (p.lat === c.lat && p.lng === c.lon) m.openPopup(); });
+};
+window.delClue = (id, btn) => {
+  if (btn.dataset.armed) {
+    state.clues = state.clues.filter(c => c.id !== id); save(); renderClues(); drawPins();
+  } else { btn.dataset.armed = 1; btn.textContent = "Tap again to delete"; }
+};
+
+// ======================================================================
+//  Print: map
+// ======================================================================
+function setOrientation(portrait) {
+  document.body.classList.toggle("portrait", portrait);
+  F("pageSize").textContent = `@page { size: A4 ${portrait ? "portrait" : "landscape"}; margin: 10mm; }`;
+  setTimeout(() => { map.invalidateSize(); drawGrid(); }, 50);
+}
+F("printMapBtn").onclick = () => {
+  const s = state.settings;
+  F("sheetTitle").textContent = s.title;
+  F("sheetSub").textContent = `Grid squares: ${s.size >= 1000 ? s.size / 1000 + " km" : s.size + " m"}`;
+  F("sheetFoot").innerHTML = `<b>How to read a 6-figure grid ref:</b> “Along the corridor, then up the stairs.” Read the blue number along the bottom (eastings) first, then the number up the side (northings). The 3rd and 6th digits are tenths of the way across the square — e.g. <b>284 231</b> = line 28, 4/10 of the way east; line 23, 1/10 of the way north. &nbsp;Map data © OpenStreetMap contributors.`;
+  document.body.classList.add("pm");
+  if (!F("pmShowClues").checked) map.removeLayer(clueLayer);
+  draftMarker.remove(); accCircle.remove(); gotoMarker.remove();
+  setOrientation(document.body.classList.contains("portrait"));
+};
+F("pmOrient").onclick = () => setOrientation(!document.body.classList.contains("portrait"));
+F("pmShowClues").onchange = e => e.target.checked ? clueLayer.addTo(map) : map.removeLayer(clueLayer);
+F("pmPrint").onclick = () => window.print();
+F("pmExit").onclick = () => {
+  document.body.classList.remove("pm"); clueLayer.addTo(map);
+  if (draft) { draftMarker.addTo(map); if (draft.acc) accCircle.addTo(map); }
+  setTimeout(() => { map.invalidateSize(); drawGrid(); }, 50);
+};
+
+// ======================================================================
+//  Print: scout + leader sheets
+// ======================================================================
+function openSheet(html) {
+  F("pageSize").textContent = "@page { size: A4 portrait; margin: 12mm; }";
+  F("psBody").innerHTML = html;
+  document.body.classList.add("ps");
+}
+F("psExit").onclick = () => {
+  document.body.classList.remove("ps");
+  setOrientation(document.body.classList.contains("portrait"));
+};
+function digitBoxes(fd, show) {
+  return `<div class="digits">${[...LETTERS].map((L, p) => `<div><span style="font-size:22px;font-weight:800">${show ? fd[p] : ""}</span>${L}</div>`).join("")}</div>`;
+}
+F("scoutSheetBtn").onclick = () => {
+  const s = state.settings, stops = state.clues.filter(c => c.kind !== "finish");
+  const allRefs = F("optAllRefs").checked, digits = F("optDigits").checked && finishDigits();
+  let html = `<h2>${esc(s.title)}</h2>
+    <p>Use your map to find each grid reference, answer the question you find there, and write down your answer.${digits ? " Your answers will reveal the secret grid reference of the chips!" : ""}</p>
+    <table><tr><th style="width:40px">Stop</th><th style="width:80px">Grid ref</th><th>Question</th><th style="width:30%">Answer</th></tr>`;
+  stops.forEach((c, i) => {
+    const ref = allRefs || i === 0 ? gridRef(c.lat, c.lon) : "";
+    const h = digits && c.digitPos != null ? `<div style="font-size:12px;margin-top:4px">🔑 ${esc(hintFor(c) || "Letter " + LETTERS[c.digitPos])}</div>` : "";
+    html += `<tr><td><b>${i + 1}</b></td><td><b>${ref || "______"}</b></td><td>${esc(c.question)}${h}</td><td class="ansbox"></td></tr>`;
+  });
+  html += `</table>`;
+  if (digits) html += `<h3 style="margin-top:20px">🍟 The chips are hidden at grid ref…</h3>${digitBoxes(digits, false)}`;
+  openSheet(html);
+};
+F("leaderSheetBtn").onclick = () => {
+  const s = state.settings, nums = stopNumbers(), fd = finishDigits();
+  let html = `<h2>${esc(s.title)} — LEADER SHEET</h2>
+    <table><tr><th>#</th><th>Grid ref</th><th>Where</th><th>Question</th><th>Answer</th><th>Digit</th><th>Notes</th></tr>`;
+  state.clues.forEach(c => {
+    const fin = c.kind === "finish";
+    html += `<tr><td><b>${fin ? "🍟" : nums[c.id]}</b></td><td><b>${gridRef(c.lat, c.lon)}</b></td><td>${esc(c.place)}</td><td>${esc(c.question)}</td><td>${esc(c.answer)}</td>
+      <td>${!fin && fd && c.digitPos != null ? `${LETTERS[c.digitPos]} = ${fd[c.digitPos]}<br><span style="font-size:11px">${esc(hintFor(c))}</span>` : ""}</td><td>${esc(c.notes)}</td></tr>`;
+  });
+  html += `</table>`;
+  if (fd) html += `<h3 style="margin-top:20px">Chip spot: ${fd.slice(0,3)} ${fd.slice(3)}</h3>${digitBoxes(fd, true)}`;
+  html += `<p class="hint">Grid: ${s.size} m squares, origin ${s.lat0}, ${s.lon0}. Printed ${new Date().toLocaleString("en-GB")}.</p>`;
+  openSheet(html);
+};
+
+// ======================================================================
+//  Backup
+// ======================================================================
+F("exportBtn").onclick = () => {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `chip-hike-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+F("copyBtn").onclick = async () => {
+  try { await navigator.clipboard.writeText(JSON.stringify(state)); toast("Copied"); }
+  catch (e) { toast("Couldn't copy — use Download instead"); }
+};
+F("importFile").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const s = JSON.parse(await f.text());
+    if (!Array.isArray(s.clues)) throw new Error("no clues");
+    state = { settings: Object.assign({}, DEFAULTS, s.settings), clues: s.clues };
+    save(); drawPins(); drawGrid(); renderClues(); toast(`Imported ${s.clues.length} clues`);
+  } catch (err) { toast("That file doesn't look like a chip-hike export"); }
+  e.target.value = "";
+};
+F("clearBtn").onclick = e => {
+  const b = e.target;
+  if (b.dataset.armed) { state.clues = []; save(); drawPins(); renderClues(); b.textContent = "Delete all clues"; delete b.dataset.armed; toast("All clues deleted"); }
+  else { b.dataset.armed = 1; b.textContent = "Tap again to delete EVERYTHING"; }
+};
+
+// ======================================================================
+//  Grid settings
+// ======================================================================
+function fillSettings() {
+  const s = state.settings;
+  F("sTitle").value = s.title; F("sSize").value = s.size; F("sLat").value = s.lat0; F("sLon").value = s.lon0;
+}
+F("originHere").onclick = () => {
+  const b = map.getBounds();
+  F("sLat").value = b.getSouth().toFixed(5); F("sLon").value = b.getWest().toFixed(5);
+  toast("Origin set — press Save grid");
+};
+F("saveSettings").onclick = () => {
+  const lat = parseFloat(F("sLat").value), lon = parseFloat(F("sLon").value);
+  if (!isFinite(lat) || !isFinite(lon)) return toast("Origin needs a latitude and longitude");
+  Object.assign(state.settings, { title: F("sTitle").value.trim() || DEFAULTS.title, size: +F("sSize").value, lat0: lat, lon0: lon });
+  save(); drawGrid(); drawPins(); if (draft) setDraft(draft.lat, draft.lon, draft.acc, draft.src);
+  toast("Grid saved");
+};
+F("resetSettings").onclick = () => { state.settings = Object.assign({}, DEFAULTS); save(); fillSettings(); drawGrid(); drawPins(); toast("Reset to Bath default"); };
+
+// ---------- Go ----------
+drawGrid(); drawPins();
+if (state.clues.length) map.fitBounds(L.latLngBounds(state.clues.map(c => [c.lat, c.lon])).pad(0.3), { maxZoom: 17 });
+</script>
+</body>
+</html>
