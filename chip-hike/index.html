@@ -209,6 +209,7 @@
     <h3>Presets</h3>
     <p class="hint">Adds the 12 sculptures from Bath's <i>Walking with The Snowman</i> trail (19 Nov 2026 – 28 Jan 2027) as clue stops. Anything already saved is kept, and snowmen already added aren't duplicated. Fill in each code as you visit.</p>
     <button class="go" id="snowmenBtn">☃️ Add the 12 snowmen</button>
+    <p class="hint" style="font-size:12px">Snowman locations from <a href="https://www.visitbath.co.uk/whats-on/walking-with-the-snowman-p4064493" target="_blank" rel="noopener">Visit Bath</a>. <i>Walking with The Snowman™</i> is created by <a href="https://wildinart.co.uk/events/walking-with-the-snowman-bath/" target="_blank" rel="noopener">Wild in Art</a> with Penguin Ventures and brought to Bath by <a href="https://welcometobath.co.uk/walking-with-the-snowman-trail/" target="_blank" rel="noopener">Bath BID</a>, raising money for Bath Area Play Project. The Snowman™ © Snowman Enterprises Ltd. This hike isn't affiliated with them.</p>
     <h3>Backup</h3>
     <p class="hint">Clues live in this browser only. Export a copy before you clear your browser or switch phone.</p>
     <div class="row">
@@ -668,7 +669,7 @@ F("printMapBtn").onclick = () => {
   const s = state.settings;
   F("sheetTitle").textContent = s.title;
   F("sheetSub").textContent = `Grid squares: ${s.size >= 1000 ? s.size / 1000 + " km" : s.size + " m"}`;
-  F("sheetFoot").innerHTML = `<b>How to read a 6-figure grid ref:</b> “Along the corridor, then up the stairs.” Read the blue number along the bottom (eastings) first, then the number up the side (northings). The 3rd and 6th digits are tenths of the way across the square — e.g. <b>284 231</b> = line 28, 4/10 of the way east; line 23, 1/10 of the way north. &nbsp;Map data © OpenStreetMap contributors.`;
+  F("sheetFoot").innerHTML = `<b>How to read a 6-figure grid ref:</b> “Along the corridor, then up the stairs.” Read the blue number along the bottom (eastings) first, then the number up the side (northings). The 3rd and 6th digits are tenths of the way across the square — e.g. <b>284 231</b> = line 28, 4/10 of the way east; line 23, 1/10 of the way north. &nbsp;Map data © OpenStreetMap contributors.${usesSnowmen() ? " " + SNOWMEN_CREDIT : ""}`;
   document.body.classList.add("pm");
   if (!F("pmShowClues").checked) { map.removeLayer(clueLayer); map.removeLayer(routeLayer); }
   draftMarker.remove(); accCircle.remove(); gotoMarker.remove();
@@ -711,6 +712,7 @@ F("scoutSheetBtn").onclick = () => {
   });
   html += `</table>`;
   if (digits) html += `<h3 style="margin-top:20px">🍟 The chips are hidden at grid ref…</h3>${digitBoxes(digits, false)}`;
+  if (usesSnowmen()) html += `<p class="hint" style="margin-top:16px;font-size:11px">${SNOWMEN_CREDIT}</p>`;
   openSheet(html);
 };
 F("leaderSheetBtn").onclick = () => {
@@ -724,6 +726,7 @@ F("leaderSheetBtn").onclick = () => {
   });
   html += `</table>`;
   if (fd) html += `<h3 style="margin-top:20px">Chip spot: ${fd.slice(0,3)} ${fd.slice(3)}</h3>${digitBoxes(fd, true)}`;
+  if (usesSnowmen()) html += `<p class="hint" style="font-size:11px">${SNOWMEN_CREDIT}</p>`;
   html += `<p class="hint">Grid: ${s.size} m squares, origin ${s.lat0}, ${s.lon0}. Printed ${new Date().toLocaleString("en-GB")}.</p>`;
   openSheet(html);
 };
@@ -782,6 +785,8 @@ F("resetSettings").onclick = () => { state.settings = Object.assign({}, DEFAULTS
 // ======================================================================
 //  Preset: Walking with The Snowman trail, Bath 2026
 // ======================================================================
+const SNOWMEN_CREDIT = `Snowman locations from Visit Bath. Walking with The Snowman™ trail by Wild in Art, brought to Bath by Bath BID in aid of Bath Area Play Project. Not affiliated.`;
+const usesSnowmen = () => state.clues.some(c => c.id.startsWith("snow"));
 const SNOWMEN = [
   ["A Partridge in a Pear Tree", "Bridge Street", 51.382833, -2.358340],
   ["Two Turtle Doves", "South Parade", 51.379967, -2.356991],
