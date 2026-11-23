@@ -845,7 +845,7 @@ let lastRoute = null;
 
 function fillRouteStarts() {
   const sel = F("rStart"), prev = sel.value, nums = stopNumbers();
-  sel.innerHTML = `<option value="gps">📍 My current location</option>` +
+  sel.innerHTML = `<option value="nearest">☃️ The stop nearest to me</option><option value="gps">📍 My current location</option>` +
     state.clues.filter(c => c.kind !== "finish").map(c => `<option value="${c.id}">Stop ${nums[c.id]}: ${esc((c.place || gridRef(c.lat, c.lon)).slice(0, 50))}</option>`).join("");
   if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
@@ -949,11 +949,19 @@ F("rGo").onclick = async () => {
   btn.disabled = true;
   try {
     // Terminals: index 0 = start
-    let start;
-    if (startSel === "gps") {
+    let start, startNote = "";
+    if (startSel === "gps" || startSel === "nearest") {
+      if (!navigator.geolocation) throw new Error("This browser has no GPS access");
       out.textContent = "Finding you…";
       const p = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 15000 }));
-      start = { label: "You", lat: p.coords.latitude, lon: p.coords.longitude };
+      const me = [p.coords.latitude, p.coords.longitude];
+      if (startSel === "gps") start = { label: "You", lat: me[0], lon: me[1] };
+      else {
+        const d = c => Math.hypot((c.lat - me[0]) * M_PER_DEG_LAT, (c.lon - me[1]) * mPerDegLon());
+        const c = stops.reduce((a, b) => d(a) <= d(b) ? a : b);
+        start = { label: "Start", lat: c.lat, lon: c.lon, clue: c };
+        startNote = `Starting at <b>${esc(c.place || gridRef(c.lat, c.lon))}</b>, about ${Math.round(d(c))} m from you (<a href="${navUrl(c)}" target="_blank" rel="noopener">🧭 navigate there</a>).<br>`;
+      }
     } else {
       const c = stops.find(c => c.id === startSel); start = { label: "Start", lat: c.lat, lon: c.lon, clue: c };
     }
@@ -996,7 +1004,7 @@ F("rGo").onclick = async () => {
     const speed = +F("rSpeed").value, walkMin = len / 1000 / speed * 60, stopMin = stops.length * 3;
     lastRoute = order.map(i => terms[i].clue).filter(Boolean);
     const total = Math.round(walkMin + stopMin);
-    out.innerHTML = `<b>${(len / 1000).toFixed(2)} km</b> · about <b>${Math.round(walkMin)} min</b> walking + ~${stopMin} min at stops ≈ <b>${Math.floor(total / 60) ? Math.floor(total / 60) + " h " : ""}${total % 60} min</b><br>
+    out.innerHTML = startNote + `<b>${(len / 1000).toFixed(2)} km</b> · about <b>${Math.round(walkMin)} min</b> walking + ~${stopMin} min at stops ≈ <b>${Math.floor(total / 60) ? Math.floor(total / 60) + " h " : ""}${total % 60} min</b><br>
       Order: ${lastRoute.filter((c, i, a) => a.indexOf(c) === i).map(c => c.kind === "finish" ? "🍟" : stopNumbers()[c.id]).join(" → ")}
       <div class="row" style="margin-top:8px"><button class="small" onclick="applyRouteOrder()">Renumber stops in this order</button></div>`;
   } catch (e) {
