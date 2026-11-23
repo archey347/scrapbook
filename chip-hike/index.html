@@ -118,6 +118,7 @@
 
 <div id="pmBar">
   <strong style="width:100%">Print preview — pan &amp; zoom to frame the area</strong>
+  <button id="pmFit">⤢ Fit to all stops</button>
   <button id="pmOrient">↻ Portrait / landscape</button>
   <label style="margin:0;display:flex;gap:4px;align-items:center;color:#000"><input type="checkbox" id="pmShowClues"> Show clue pins &amp; route</label>
   <button class="primary" id="pmPrint">Print</button>
@@ -667,8 +668,21 @@ F("printMapBtn").onclick = () => {
   document.body.classList.add("pm");
   if (!F("pmShowClues").checked) { map.removeLayer(clueLayer); map.removeLayer(routeLayer); }
   draftMarker.remove(); accCircle.remove(); gotoMarker.remove();
-  setOrientation(document.body.classList.contains("portrait"));
+  if (state.clues.length) fitPrintToStops(); else setOrientation(document.body.classList.contains("portrait"));
 };
+// Frame the print to every stop + the chip spot, with a margin, choosing the orientation that fits best
+function fitPrintToStops() {
+  if (!state.clues.length) return toast("No stops to fit to yet");
+  const pts = state.clues.map(c => toXY(c.lat, c.lon));
+  const pad = state.settings.size * 1.0;                       // one grid square of margin all round
+  const minX = Math.min(...pts.map(p => p.x)) - pad, maxX = Math.max(...pts.map(p => p.x)) + pad;
+  const minY = Math.min(...pts.map(p => p.y)) - pad, maxY = Math.max(...pts.map(p => p.y)) + pad;
+  setOrientation((maxY - minY) > (maxX - minX));
+  setTimeout(() => {
+    map.fitBounds([fromXY(minX, minY), fromXY(maxX, maxY)], { padding: [0, 0] });
+  }, 120);
+}
+F("pmFit").onclick = fitPrintToStops;
 F("pmOrient").onclick = () => setOrientation(!document.body.classList.contains("portrait"));
 F("pmShowClues").onchange = e => { const on = e.target.checked; [clueLayer, routeLayer].forEach(l => on ? l.addTo(map) : map.removeLayer(l)); };
 F("pmPrint").onclick = () => window.print();
