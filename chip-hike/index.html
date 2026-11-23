@@ -56,6 +56,7 @@
   .clue .body { flex:1; min-width:0; }
   .clue .ref { font-weight:800; font-variant-numeric:tabular-nums; }
   .clue img { width:64px; height:64px; object-fit:cover; border-radius:6px; }
+  a.navlink { display:inline-block; text-decoration:none; color:inherit; border:1px solid #bbb; border-radius:8px; padding:4px 8px; font-size:13px; }
   .actions { display:flex; gap:4px; flex-wrap:wrap; margin-top:6px; }
   .pin { width:28px; height:28px; border-radius:50%; background:var(--purple); color:#fff; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; }
   .pin.finish { background:#f2b705; font-size:16px; }
@@ -118,7 +119,7 @@
 <div id="pmBar">
   <strong style="width:100%">Print preview — pan &amp; zoom to frame the area</strong>
   <button id="pmOrient">↻ Portrait / landscape</button>
-  <label style="margin:0;display:flex;gap:4px;align-items:center;color:#000"><input type="checkbox" id="pmShowClues"> Show clue pins</label>
+  <label style="margin:0;display:flex;gap:4px;align-items:center;color:#000"><input type="checkbox" id="pmShowClues"> Show clue pins &amp; route</label>
   <button class="primary" id="pmPrint">Print</button>
   <button id="pmExit">Done</button>
 </div>
@@ -168,6 +169,24 @@
 
   <!-- CLUES -->
   <div class="tab" id="tab-clues">
+    <button class="go" id="nearestBtn" style="width:100%">🧭 Take me to the nearest stop without a code</button>
+    <div class="box" id="routeBox">
+      <b>☃️ Snowman route — collecting the codes</b>
+      <p class="hint" style="margin:4px 0">A navigation aid for walking the snowman trail: finds the shortest walk round the snowmen on real streets and footpaths (OpenStreetMap). It doesn't change your hike or clue order.</p>
+      <label>Start from</label>
+      <select id="rStart"></select>
+      <label>Finish</label>
+      <select id="rEnd">
+        <option value="any">Wherever is quickest</option>
+        <option value="loop">Back where I started</option>
+      </select>
+      <label style="display:flex;gap:6px;align-items:center;color:#000"><input type="checkbox" id="rSkipDone" checked> Skip snowmen I already have a code for</label>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="rGo">Plan my snowman walk</button>
+        <button id="rClear" style="flex:0 0 auto">Clear</button>
+      </div>
+      <div id="rOut" class="hint" style="margin-top:8px"></div>
+    </div>
     <div id="digitBox"></div>
     <div id="clueList"></div>
   </div>
@@ -181,6 +200,10 @@
       <button class="primary" id="scoutSheetBtn">Scout sheet</button>
       <button id="leaderSheetBtn">Leader sheet (answers)</button>
     </div>
+    <h3>Presets</h3>
+    <p class="hint">Adds the 12 sculptures from Bath's <i>Walking with The Snowman</i> trail (19 Nov 2026 – 28 Jan 2027) as clue stops. Anything already saved is kept, and snowmen already added aren't duplicated. Fill in each code as you visit.</p>
+    <button class="go" id="snowmenBtn">☃️ Add the 12 snowmen</button>
+    <p class="hint" style="font-size:12px">Snowman locations from <a href="https://www.visitbath.co.uk/whats-on/walking-with-the-snowman-p4064493" target="_blank" rel="noopener">Visit Bath</a>. <i>Walking with The Snowman™</i> is created by <a href="https://wildinart.co.uk/events/walking-with-the-snowman-bath/" target="_blank" rel="noopener">Wild in Art</a> with Penguin Ventures and brought to Bath by <a href="https://welcometobath.co.uk/walking-with-the-snowman-trail/" target="_blank" rel="noopener">Bath BID</a>, raising money for Bath Area Play Project. The Snowman™ © Snowman Enterprises Ltd. This hike isn't affiliated with them.</p>
     <h3>Backup</h3>
     <p class="hint">Clues live in this browser only. Export a copy before you clear your browser or switch phone.</p>
     <div class="row">
@@ -368,12 +391,15 @@ function stopNumbers() {
   state.clues.forEach(c => { if (c.kind !== "finish") nums[c.id] = ++n; });
   return nums;
 }
+function navUrl(c) {
+  return `https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lon}&travelmode=walking`;
+}
 function drawPins() {
   clueLayer.clearLayers();
   const nums = stopNumbers();
   state.clues.forEach(c => {
     L.marker([c.lat, c.lon], { icon: pinIcon(c, nums[c.id]) })
-      .bindPopup(`<b>${c.kind === "finish" ? "🍟 Chip spot" : "Stop " + nums[c.id]}</b> — ${gridRef(c.lat, c.lon)}<br>${esc(c.place)}<br><i>${esc(c.question)}</i>`)
+      .bindPopup(`<b>${c.kind === "finish" ? "🍟 Chip spot" : "Stop " + nums[c.id]}</b> — ${gridRef(c.lat, c.lon)}<br>${esc(c.place)}<br><i>${esc(c.question)}</i>${c.answer ? "<br>✅ " + esc(c.answer) : ""}<br><a href="${navUrl(c)}" target="_blank" rel="noopener">🧭 Navigate here</a>`)
       .addTo(clueLayer);
   });
 }
@@ -553,10 +579,11 @@ window.autoAssign = () => {
 };
 
 function renderClues() {
-  renderDigitBox();
+  renderDigitBox(); fillRouteStarts();
   const list = F("clueList"), nums = stopNumbers(), fd = finishDigits();
-  if (!state.clues.length) { list.innerHTML = `<p class="hint">No clues yet — record some from the 📍 Record tab.</p>`; return; }
-  list.innerHTML = state.clues.map((c, i) => {
+  if (!state.clues.length) { list.innerHTML = `<p class="hint">No clues yet — record some from the 📍 Record tab, or <button class="small" onclick="addSnowmen()">☃️ add the 12 Bath snowmen</button></p>`; return; }
+  const stopsAll = state.clues.filter(c => c.kind !== "finish"), done = stopsAll.filter(c => c.answer).length;
+  list.innerHTML = `<p class="hint">${done} of ${stopsAll.length} stops have an answer/code recorded.</p>` + state.clues.map((c, i) => {
     const fin = c.kind === "finish";
     let digitUi = "";
     if (!fin && fd) {
@@ -574,13 +601,20 @@ function renderClues() {
         <div class="ref">${gridRef(c.lat, c.lon)} <span class="hint">${c.acc ? "±" + Math.round(c.acc) + " m" : ""}</span></div>
         <div>${esc(c.place) || "<i class='hint'>No description</i>"}</div>
         ${c.question ? `<div><b>Q:</b> ${esc(c.question)}</div>` : ""}
-        ${c.answer ? `<div><b>A:</b> ${esc(c.answer)}</div>` : ""}
+        <div class="row" style="margin-top:4px;gap:6px">
+          <b style="flex:0 0 auto">${fin ? "A:" : (c.id.startsWith("snow") ? "Code:" : "A:")}</b>
+          <input type="text" value="${esc(c.answer)}" placeholder="${c.id.startsWith("snow") ? "Type the code when you get there" : "Answer"}"
+            oninput="setAnswer('${c.id}', this.value, false)" onchange="setAnswer('${c.id}', this.value, true)"
+            style="${c.answer ? "" : "border-color:#e3a1ab"}" autocapitalize="characters" autocomplete="off">
+          ${c.answer ? '<span style="flex:0 0 auto">✅</span>' : ""}
+        </div>
         ${c.notes ? `<div class="hint">${esc(c.notes)}</div>` : ""}
         ${digitUi}
         <div class="actions">
           <button class="small" onclick="moveClue(${i},-1)" ${i === 0 ? "disabled" : ""}>↑</button>
           <button class="small" onclick="moveClue(${i},1)" ${i === state.clues.length - 1 ? "disabled" : ""}>↓</button>
           <button class="small" onclick="showClue('${c.id}')">Map</button>
+          <a class="small navlink" href="${navUrl(c)}" target="_blank" rel="noopener">🧭 Navigate</a>
           <button class="small" onclick="editClue('${c.id}')">Edit</button>
           <button class="small danger" onclick="delClue('${c.id}', this)">Delete</button>
         </div>
@@ -595,6 +629,11 @@ window.setDigit = (id, v) => {
   const p = v === "" ? null : +v;
   if (p != null) state.clues.forEach(o => { if (o.digitPos === p && o.id !== id) { o.digitPos = null; o.hint = ""; } });
   c.digitPos = p; c.hint = ""; save(); renderClues();
+};
+window.setAnswer = (id, v, rerender) => {
+  const c = state.clues.find(c => c.id === id); if (!c) return;
+  c.answer = v.trim(); save();
+  if (rerender) { renderClues(); drawPins(); }
 };
 window.setHint = (id, v) => { state.clues.find(c => c.id === id).hint = v.trim(); save(); renderClues(); };
 window.moveClue = (i, d) => {
@@ -624,17 +663,17 @@ F("printMapBtn").onclick = () => {
   const s = state.settings;
   F("sheetTitle").textContent = s.title;
   F("sheetSub").textContent = `Grid squares: ${s.size >= 1000 ? s.size / 1000 + " km" : s.size + " m"}`;
-  F("sheetFoot").innerHTML = `<b>How to read a 6-figure grid ref:</b> “Along the corridor, then up the stairs.” Read the blue number along the bottom (eastings) first, then the number up the side (northings). The 3rd and 6th digits are tenths of the way across the square — e.g. <b>284 231</b> = line 28, 4/10 of the way east; line 23, 1/10 of the way north. &nbsp;Map data © OpenStreetMap contributors.`;
+  F("sheetFoot").innerHTML = `<b>How to read a 6-figure grid ref:</b> “Along the corridor, then up the stairs.” Read the blue number along the bottom (eastings) first, then the number up the side (northings). The 3rd and 6th digits are tenths of the way across the square — e.g. <b>284 231</b> = line 28, 4/10 of the way east; line 23, 1/10 of the way north. &nbsp;Map data © OpenStreetMap contributors.${usesSnowmen() ? " " + SNOWMEN_CREDIT : ""}`;
   document.body.classList.add("pm");
-  if (!F("pmShowClues").checked) map.removeLayer(clueLayer);
+  if (!F("pmShowClues").checked) { map.removeLayer(clueLayer); map.removeLayer(routeLayer); }
   draftMarker.remove(); accCircle.remove(); gotoMarker.remove();
   setOrientation(document.body.classList.contains("portrait"));
 };
 F("pmOrient").onclick = () => setOrientation(!document.body.classList.contains("portrait"));
-F("pmShowClues").onchange = e => e.target.checked ? clueLayer.addTo(map) : map.removeLayer(clueLayer);
+F("pmShowClues").onchange = e => { const on = e.target.checked; [clueLayer, routeLayer].forEach(l => on ? l.addTo(map) : map.removeLayer(l)); };
 F("pmPrint").onclick = () => window.print();
 F("pmExit").onclick = () => {
-  document.body.classList.remove("pm"); clueLayer.addTo(map);
+  document.body.classList.remove("pm"); clueLayer.addTo(map); routeLayer.addTo(map);
   if (draft) { draftMarker.addTo(map); if (draft.acc) accCircle.addTo(map); }
   setTimeout(() => { map.invalidateSize(); drawGrid(); }, 50);
 };
@@ -667,6 +706,7 @@ F("scoutSheetBtn").onclick = () => {
   });
   html += `</table>`;
   if (digits) html += `<h3 style="margin-top:20px">🍟 The chips are hidden at grid ref…</h3>${digitBoxes(digits, false)}`;
+  if (usesSnowmen()) html += `<p class="hint" style="margin-top:16px;font-size:11px">${SNOWMEN_CREDIT}</p>`;
   openSheet(html);
 };
 F("leaderSheetBtn").onclick = () => {
@@ -680,6 +720,7 @@ F("leaderSheetBtn").onclick = () => {
   });
   html += `</table>`;
   if (fd) html += `<h3 style="margin-top:20px">Chip spot: ${fd.slice(0,3)} ${fd.slice(3)}</h3>${digitBoxes(fd, true)}`;
+  if (usesSnowmen()) html += `<p class="hint" style="font-size:11px">${SNOWMEN_CREDIT}</p>`;
   html += `<p class="hint">Grid: ${s.size} m squares, origin ${s.lat0}, ${s.lon0}. Printed ${new Date().toLocaleString("en-GB")}.</p>`;
   openSheet(html);
 };
@@ -734,6 +775,237 @@ F("saveSettings").onclick = () => {
   toast("Grid saved");
 };
 F("resetSettings").onclick = () => { state.settings = Object.assign({}, DEFAULTS); save(); fillSettings(); drawGrid(); drawPins(); toast("Reset to Bath default"); };
+
+// ======================================================================
+//  Preset: Walking with The Snowman trail, Bath 2026
+// ======================================================================
+const SNOWMEN_CREDIT = `Snowman locations from Visit Bath. Walking with The Snowman™ trail by Wild in Art, brought to Bath by Bath BID in aid of Bath Area Play Project. Not affiliated.`;
+const usesSnowmen = () => state.clues.some(c => c.id.startsWith("snow"));
+const SNOWMEN = [
+  ["A Partridge in a Pear Tree", "Bridge Street", 51.382833, -2.358340],
+  ["Two Turtle Doves", "South Parade", 51.379967, -2.356991],
+  ["Three French Hens", "Northgate Street", 51.383149, -2.359375],
+  ["Four Calling Birds", "Alkmaar Gardens", 51.381827, -2.357871],
+  ["Five Gold Rings", "Northumberland Place", 51.382369, -2.360084],
+  ["Six Geese a-Laying", "George Street", 51.384955, -2.361910],
+  ["Seven Swans a-Swimming", "Hot Bath Street", 51.380627, -2.361221],
+  ["Eight Maids a-Milking", "Southgate Street", 51.379643, -2.359483],
+  ["Nine Ladies Dancing", "Saw Close", 51.381985, -2.362270],
+  ["Ten Lords a-Leaping", "Dorchester Street", 51.377725, -2.357423],
+  ["Eleven Pipers Piping", "St Lawrence Street", 51.379063, -2.358643],
+  ["Twelve Drummers Drumming", "James Street West", 51.381517, -2.365381],
+];
+window.addSnowmen = () => {
+  let added = 0;
+  SNOWMEN.forEach(([name, street, lat, lon], i) => {
+    const id = "snow" + (i + 1);
+    if (state.clues.some(c => c.id === id)) return;
+    state.clues.push({ id, kind: "stop", lat, lon, acc: null,
+      place: `Snowman ${i + 1}: ${name} — ${street}`,
+      question: "What's the code on this snowman?", answer: "", notes: "",
+      photo: null, digitPos: null, hint: "", created: new Date().toISOString() });
+    added++;
+  });
+  if (save()) {
+    drawPins(); renderClues();
+    map.fitBounds(L.latLngBounds(SNOWMEN.map(s => [s[2], s[3]])).pad(0.2));
+    toast(added ? `Added ${added} snowmen ☃️` : "All 12 snowmen are already in");
+  }
+};
+F("snowmenBtn").onclick = () => { window.addSnowmen(); switchTab("clues"); };
+
+F("nearestBtn").onclick = () => {
+  const todo = state.clues.filter(c => c.kind !== "finish" && !c.answer);
+  if (!todo.length) return toast("Every stop has a code 🎉");
+  if (!navigator.geolocation) return toast("No GPS in this browser");
+  toast("Finding you…");
+  navigator.geolocation.getCurrentPosition(p => {
+    const { latitude: la, longitude: lo } = p.coords;
+    const d = c => Math.hypot((c.lat - la) * M_PER_DEG_LAT, (c.lon - lo) * mPerDegLon());
+    const best = todo.reduce((a, b) => d(a) <= d(b) ? a : b);
+    showClue(best.id);
+    toast(`${best.place || gridRef(best.lat, best.lon)} — ${Math.round(d(best))} m away`, 4000);
+    window.open(navUrl(best), "_blank", "noopener");
+  }, e => toast("GPS error: " + e.message, 4000), { enableHighAccuracy: true, timeout: 15000 });
+};
+
+
+// ======================================================================
+//  Fastest walking route (OSM street + footpath network, exact TSP)
+// ======================================================================
+const routeLayer = L.layerGroup().addTo(map);
+let routeCache = { key: null, graph: null };
+let lastRoute = null;
+
+function snowmenStops() { return state.clues.filter(c => c.id.startsWith("snow")); }
+function fillRouteStarts() {
+  const sel = F("rStart"), prev = sel.value;
+  sel.innerHTML = `<option value="nearest">☃️ The snowman nearest to me</option><option value="gps">📍 My current location</option>` +
+    snowmenStops().map(c => `<option value="${c.id}">${esc(c.place.replace(/ — .*/, ""))}</option>`).join("");
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+const WALKABLE = "footway|path|pedestrian|steps|living_street|residential|unclassified|tertiary|tertiary_link|secondary|secondary_link|primary|primary_link|service|track|cycleway|bridleway|corridor";
+async function fetchWalkGraph(pts) {
+  const pad = 0.004;
+  const s = Math.min(...pts.map(p => p[0])) - pad, n = Math.max(...pts.map(p => p[0])) + pad;
+  const w = Math.min(...pts.map(p => p[1])) - pad * 1.6, e = Math.max(...pts.map(p => p[1])) + pad * 1.6;
+  const key = [s, w, n, e].map(v => v.toFixed(3)).join(",");
+  if (routeCache.key === key) return routeCache.graph;
+  const q = `[out:json][timeout:60];way["highway"~"^(${WALKABLE})$"]["foot"!~"no|private"]["access"!~"private|no"](${s},${w},${n},${e});(._;>;);out skel qt;`;
+  const hosts = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+  let osm = null, lastErr;
+  for (const h of hosts) {
+    try {
+      const r = await fetch(h, { method: "POST", body: "data=" + encodeURIComponent(q), headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      osm = await r.json(); break;
+    } catch (e) { lastErr = e; }
+  }
+  if (!osm) throw new Error("Couldn't download the street map (" + (lastErr && lastErr.message) + ")");
+  // Build an undirected graph
+  const nodes = new Map(), adj = new Map();
+  for (const el of osm.elements) if (el.type === "node") nodes.set(el.id, [el.lat, el.lon]);
+  const kx = mPerDegLon(), dist = (a, b) => Math.hypot((a[0] - b[0]) * M_PER_DEG_LAT, (a[1] - b[1]) * kx);
+  const link = (a, b, d) => { if (!adj.has(a)) adj.set(a, []); adj.get(a).push([b, d]); };
+  for (const el of osm.elements) if (el.type === "way") {
+    for (let i = 1; i < el.nodes.length; i++) {
+      const a = el.nodes[i - 1], b = el.nodes[i], pa = nodes.get(a), pb = nodes.get(b);
+      if (!pa || !pb) continue;
+      const d = dist(pa, pb); link(a, b, d); link(b, a, d);
+    }
+  }
+  const graph = { nodes, adj, dist };
+  routeCache = { key, graph };
+  return graph;
+}
+function snap(g, ll) {
+  let best = null, bd = Infinity;
+  for (const id of g.adj.keys()) { const d = g.dist(g.nodes.get(id), ll); if (d < bd) { bd = d; best = id; } }
+  return { id: best, off: bd };
+}
+// Dijkstra from one node to all; returns {d: Map, prev: Map}
+function dijkstraAll(g, src) {
+  const d = new Map([[src, 0]]), prev = new Map(), heap = [[0, src]];
+  const push = x => { heap.push(x); let i = heap.length - 1; while (i) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+  const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+  while (heap.length) {
+    const [du, u] = pop();
+    if (du > d.get(u)) continue;
+    for (const [v, w] of g.adj.get(u) || []) {
+      const nd = du + w;
+      if (nd < (d.has(v) ? d.get(v) : Infinity)) { d.set(v, nd); prev.set(v, u); push([nd, v]); }
+    }
+  }
+  return { d, prev };
+}
+function pathTo(prev, src, dst) {
+  const out = [dst]; let u = dst;
+  while (u !== src) { u = prev.get(u); if (u == null) return null; out.push(u); }
+  return out.reverse();
+}
+// Exact shortest Hamiltonian path (Held–Karp). 0 = start. end: index | null (free) ; loop -> return to 0
+function solveTSP(D, endIdx, loop) {
+  const n = D.length, FULL = 1 << n, INF = Infinity;
+  const dp = new Float64Array(FULL * n).fill(INF), par = new Int8Array(FULL * n).fill(-1);
+  dp[1 * n + 0] = 0;
+  for (let mask = 1; mask < FULL; mask += 2) {
+    for (let j = 0; j < n; j++) {
+      const cur = dp[mask * n + j]; if (cur === INF) continue;
+      for (let k = 1; k < n; k++) {
+        if (mask & (1 << k)) continue;
+        // the fixed end node must be visited last
+        if (endIdx != null && k === endIdx && (mask | (1 << k)) !== FULL - 1) continue;
+        const nm = mask | (1 << k), v = cur + D[j][k];
+        if (v < dp[nm * n + k]) { dp[nm * n + k] = v; par[nm * n + k] = j; }
+      }
+    }
+  }
+  const all = FULL - 1;
+  let bestJ = -1, best = INF;
+  for (let j = 0; j < n; j++) {
+    if (endIdx != null && j !== endIdx) continue;
+    const v = dp[all * n + j] + (loop ? D[j][0] : 0);
+    if (v < best) { best = v; bestJ = j; }
+  }
+  const order = []; let mask = all, j = bestJ;
+  while (j !== -1) { order.push(j); const pj = par[mask * n + j]; mask ^= (1 << j); j = pj; }
+  order.reverse();
+  if (loop) order.push(0);
+  return { order, len: best };
+}
+
+F("rGo").onclick = async () => {
+  const out = F("rOut"), btn = F("rGo");
+  const all = snowmenStops();
+  if (!all.length) { out.innerHTML = `No snowmen loaded yet. <button class="small" onclick="addSnowmen()">☃️ Add the 12 snowmen</button>`; return; }
+  const stops = F("rSkipDone").checked ? all.filter(c => !c.answer) : all;
+  if (!stops.length) { out.textContent = "You've got a code for every snowman 🎉"; return; }
+  const endMode = F("rEnd").value, startSel = F("rStart").value;
+  btn.disabled = true;
+  try {
+    // Terminals: index 0 = start
+    let start, startNote = "";
+    if (startSel === "gps" || startSel === "nearest") {
+      if (!navigator.geolocation) throw new Error("This browser has no GPS access");
+      out.textContent = "Finding you…";
+      const p = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 15000 }));
+      const me = [p.coords.latitude, p.coords.longitude];
+      if (startSel === "gps") start = { label: "You", lat: me[0], lon: me[1] };
+      else {
+        const d = c => Math.hypot((c.lat - me[0]) * M_PER_DEG_LAT, (c.lon - me[1]) * mPerDegLon());
+        const c = stops.reduce((a, b) => d(a) <= d(b) ? a : b);
+        start = { label: "Start", lat: c.lat, lon: c.lon, clue: c };
+        startNote = `Nearest snowman: <b>${esc(c.place.replace(/ — .*/, ""))}</b>, about ${Math.round(d(c))} m from you (<a href="${navUrl(c)}" target="_blank" rel="noopener">🧭 navigate there</a>).<br>`;
+      }
+    } else {
+      const c = all.find(c => c.id === startSel); start = { label: "Start", lat: c.lat, lon: c.lon, clue: c };
+    }
+    const terms = [start, ...stops.filter(c => c !== start.clue).map(c => ({ lat: c.lat, lon: c.lon, clue: c }))];
+    const endIdx = null;
+    if (terms.length > 16) throw new Error("Too many stops for an exact route (max 15)");
+
+    out.textContent = "Downloading streets and footpaths…";
+    const g = await fetchWalkGraph(terms.map(t => [t.lat, t.lon]));
+    out.textContent = "Working out the best order…";
+    await new Promise(r => setTimeout(r, 20));
+    const snaps = terms.map(t => snap(g, [t.lat, t.lon]));
+    const runs = snaps.map(s => dijkstraAll(g, s.id));
+    const D = snaps.map((a, i) => snaps.map((b, j) => {
+      if (i === j) return 0;
+      const v = runs[i].d.get(b.id);
+      return v == null ? Infinity : v + a.off + b.off;
+    }));
+    const unreachable = terms.filter((t, i) => i && !isFinite(D[0][i]));
+    if (unreachable.length) throw new Error("Couldn't reach: " + unreachable.map(t => t.clue.place || gridRef(t.lat, t.lon)).join(", "));
+    const { order, len } = solveTSP(D, endIdx, endMode === "loop");
+
+    // Draw
+    routeLayer.clearLayers();
+    let lines = [];
+    for (let k = 1; k < order.length; k++) {
+      const a = order[k - 1], b = order[k];
+      const ids = pathTo(runs[a].prev, snaps[a].id, snaps[b].id) || [];
+      lines.push([[terms[a].lat, terms[a].lon], ...ids.map(id => g.nodes.get(id)), [terms[b].lat, terms[b].lon]]);
+    }
+    L.polyline(lines, { color: "#e4007c", weight: 5, opacity: 0.75 }).addTo(routeLayer);
+    order.forEach((ti, k) => {
+      if (endMode === "loop" && k === order.length - 1) return;
+      L.marker([terms[ti].lat, terms[ti].lon], { interactive: false, icon: L.divIcon({ className: "", iconSize: [20, 20], iconAnchor: [-6, 24],
+        html: `<div style="background:#e4007c;color:#fff;border-radius:10px;padding:1px 6px;font-size:12px;font-weight:700">${k === 0 && !start.clue ? "▶" : (start.clue ? k + 1 : k)}</div>` }) }).addTo(routeLayer);
+    });
+    map.fitBounds(L.latLngBounds(lines.flat()).pad(0.1));
+
+    const walkMin = len / 1000 / 4 * 60;
+    lastRoute = order.map(i => terms[i].clue).filter(Boolean).filter((c, i, arr) => arr.indexOf(c) === i);
+    out.innerHTML = startNote + `<b>${(len / 1000).toFixed(2)} km</b> · about <b>${Math.round(walkMin)} min</b> walking at 4 km/h
+      <ol style="padding-left:20px;margin:8px 0">${lastRoute.map(c => `<li style="margin:4px 0">${esc(c.place.replace(/^Snowman \d+: /, "").replace(/ — /, " · "))}${c.answer ? " ✅" : ""}
+        <a class="navlink" href="${navUrl(c)}" target="_blank" rel="noopener">🧭</a></li>`).join("")}</ol>
+      <span style="font-size:12px">Tap 🧭 for walking directions to each one. Re-plan any time — it skips ones you've done.</span>`;
+  } catch (e) {
+    out.innerHTML = `<span class="warn">⚠️ ${esc(e.message || e)}</span>`;
+  } finally { btn.disabled = false; }
+};
+F("rClear").onclick = () => { routeLayer.clearLayers(); F("rOut").textContent = ""; lastRoute = null; };
 
 // ---------- Go ----------
 drawGrid(); drawPins();
