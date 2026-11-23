@@ -171,24 +171,18 @@
   <div class="tab" id="tab-clues">
     <button class="go" id="nearestBtn" style="width:100%">🧭 Take me to the nearest stop without a code</button>
     <div class="box" id="routeBox">
-      <b>🚶 Fastest walking route</b>
-      <p class="hint" style="margin:4px 0">Uses real streets and footpaths from OpenStreetMap to find the shortest order to visit every stop.</p>
+      <b>☃️ Snowman route — collecting the codes</b>
+      <p class="hint" style="margin:4px 0">A navigation aid for walking the snowman trail: finds the shortest walk round the snowmen on real streets and footpaths (OpenStreetMap). It doesn't change your hike or clue order.</p>
       <label>Start from</label>
       <select id="rStart"></select>
       <label>Finish</label>
       <select id="rEnd">
-        <option value="chips">At the 🍟 chip spot (if set)</option>
         <option value="any">Wherever is quickest</option>
-        <option value="loop">Back at the start</option>
+        <option value="loop">Back where I started</option>
       </select>
-      <label>Walking speed</label>
-      <select id="rSpeed">
-        <option value="3.5">Slow — 3.5 km/h (younger scouts, busy streets)</option>
-        <option value="4" selected>Normal group — 4 km/h</option>
-        <option value="5">Brisk — 5 km/h</option>
-      </select>
+      <label style="display:flex;gap:6px;align-items:center;color:#000"><input type="checkbox" id="rSkipDone" checked> Skip snowmen I already have a code for</label>
       <div class="row" style="margin-top:10px">
-        <button class="primary" id="rGo">Calculate route</button>
+        <button class="primary" id="rGo">Plan my snowman walk</button>
         <button id="rClear" style="flex:0 0 auto">Clear</button>
       </div>
       <div id="rOut" class="hint" style="margin-top:8px"></div>
@@ -843,13 +837,13 @@ const routeLayer = L.layerGroup().addTo(map);
 let routeCache = { key: null, graph: null };
 let lastRoute = null;
 
+function snowmenStops() { return state.clues.filter(c => c.id.startsWith("snow")); }
 function fillRouteStarts() {
-  const sel = F("rStart"), prev = sel.value, nums = stopNumbers();
-  sel.innerHTML = `<option value="nearest">☃️ The stop nearest to me</option><option value="gps">📍 My current location</option>` +
-    state.clues.filter(c => c.kind !== "finish").map(c => `<option value="${c.id}">Stop ${nums[c.id]}: ${esc((c.place || gridRef(c.lat, c.lon)).slice(0, 50))}</option>`).join("");
+  const sel = F("rStart"), prev = sel.value;
+  sel.innerHTML = `<option value="nearest">☃️ The snowman nearest to me</option><option value="gps">📍 My current location</option>` +
+    snowmenStops().map(c => `<option value="${c.id}">${esc(c.place.replace(/ — .*/, ""))}</option>`).join("");
   if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
-
 const WALKABLE = "footway|path|pedestrian|steps|living_street|residential|unclassified|tertiary|tertiary_link|secondary|secondary_link|primary|primary_link|service|track|cycleway|bridleway|corridor";
 async function fetchWalkGraph(pts) {
   const pad = 0.004;
@@ -942,9 +936,10 @@ function solveTSP(D, endIdx, loop) {
 
 F("rGo").onclick = async () => {
   const out = F("rOut"), btn = F("rGo");
-  const stops = state.clues.filter(c => c.kind !== "finish");
-  const fin = finishClue();
-  if (stops.length < 2) return toast("Add at least 2 stops first");
+  const all = snowmenStops();
+  if (!all.length) { out.innerHTML = `No snowmen loaded yet. <button class="small" onclick="addSnowmen()">☃️ Add the 12 snowmen</button>`; return; }
+  const stops = F("rSkipDone").checked ? all.filter(c => !c.answer) : all;
+  if (!stops.length) { out.textContent = "You've got a code for every snowman 🎉"; return; }
   const endMode = F("rEnd").value, startSel = F("rStart").value;
   btn.disabled = true;
   try {
@@ -960,14 +955,13 @@ F("rGo").onclick = async () => {
         const d = c => Math.hypot((c.lat - me[0]) * M_PER_DEG_LAT, (c.lon - me[1]) * mPerDegLon());
         const c = stops.reduce((a, b) => d(a) <= d(b) ? a : b);
         start = { label: "Start", lat: c.lat, lon: c.lon, clue: c };
-        startNote = `Starting at <b>${esc(c.place || gridRef(c.lat, c.lon))}</b>, about ${Math.round(d(c))} m from you (<a href="${navUrl(c)}" target="_blank" rel="noopener">🧭 navigate there</a>).<br>`;
+        startNote = `Nearest snowman: <b>${esc(c.place.replace(/ — .*/, ""))}</b>, about ${Math.round(d(c))} m from you (<a href="${navUrl(c)}" target="_blank" rel="noopener">🧭 navigate there</a>).<br>`;
       }
     } else {
-      const c = stops.find(c => c.id === startSel); start = { label: "Start", lat: c.lat, lon: c.lon, clue: c };
+      const c = all.find(c => c.id === startSel); start = { label: "Start", lat: c.lat, lon: c.lon, clue: c };
     }
     const terms = [start, ...stops.filter(c => c !== start.clue).map(c => ({ lat: c.lat, lon: c.lon, clue: c }))];
-    let endIdx = null;
-    if (endMode === "chips" && fin) { terms.push({ lat: fin.lat, lon: fin.lon, clue: fin }); endIdx = terms.length - 1; }
+    const endIdx = null;
     if (terms.length > 16) throw new Error("Too many stops for an exact route (max 15)");
 
     out.textContent = "Downloading streets and footpaths…";
@@ -1001,25 +995,17 @@ F("rGo").onclick = async () => {
     });
     map.fitBounds(L.latLngBounds(lines.flat()).pad(0.1));
 
-    const speed = +F("rSpeed").value, walkMin = len / 1000 / speed * 60, stopMin = stops.length * 3;
-    lastRoute = order.map(i => terms[i].clue).filter(Boolean);
-    const total = Math.round(walkMin + stopMin);
-    out.innerHTML = startNote + `<b>${(len / 1000).toFixed(2)} km</b> · about <b>${Math.round(walkMin)} min</b> walking + ~${stopMin} min at stops ≈ <b>${Math.floor(total / 60) ? Math.floor(total / 60) + " h " : ""}${total % 60} min</b><br>
-      Order: ${lastRoute.filter((c, i, a) => a.indexOf(c) === i).map(c => c.kind === "finish" ? "🍟" : stopNumbers()[c.id]).join(" → ")}
-      <div class="row" style="margin-top:8px"><button class="small" onclick="applyRouteOrder()">Renumber stops in this order</button></div>`;
+    const walkMin = len / 1000 / 4 * 60;
+    lastRoute = order.map(i => terms[i].clue).filter(Boolean).filter((c, i, arr) => arr.indexOf(c) === i);
+    out.innerHTML = startNote + `<b>${(len / 1000).toFixed(2)} km</b> · about <b>${Math.round(walkMin)} min</b> walking at 4 km/h
+      <ol style="padding-left:20px;margin:8px 0">${lastRoute.map(c => `<li style="margin:4px 0">${esc(c.place.replace(/^Snowman \d+: /, "").replace(/ — /, " · "))}${c.answer ? " ✅" : ""}
+        <a class="navlink" href="${navUrl(c)}" target="_blank" rel="noopener">🧭</a></li>`).join("")}</ol>
+      <span style="font-size:12px">Tap 🧭 for walking directions to each one. Re-plan any time — it skips ones you've done.</span>`;
   } catch (e) {
     out.innerHTML = `<span class="warn">⚠️ ${esc(e.message || e)}</span>`;
   } finally { btn.disabled = false; }
 };
 F("rClear").onclick = () => { routeLayer.clearLayers(); F("rOut").textContent = ""; lastRoute = null; };
-window.applyRouteOrder = () => {
-  if (!lastRoute) return;
-  const seen = new Set(), ordered = lastRoute.filter(c => !seen.has(c.id) && seen.add(c.id));
-  const rest = state.clues.filter(c => !seen.has(c.id));
-  state.clues = [...ordered.filter(c => c.kind !== "finish"), ...rest, ...ordered.filter(c => c.kind === "finish")];
-  save(); drawPins(); renderClues(); routeLayer.clearLayers(); lastRoute = null;
-  toast("Stops renumbered in route order");
-};
 
 // ---------- Go ----------
 drawGrid(); drawPins();
