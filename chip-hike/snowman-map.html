@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Snowman Chip Hunt — Grid Map</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+<style id="pageSize">@page { size: A4 portrait; margin: 8mm; }</style>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; font-family: "Helvetica Neue", Arial, sans-serif; color: #111; }
+  body { background: #888; display: flex; flex-direction: column; align-items: center; padding: 12px; gap: 12px; }
+
+  #bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; background: #fff; padding: 8px 10px;
+         border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.3); max-width: 194mm; }
+  #bar button { font: inherit; padding: 6px 12px; border: 1px solid #bbb; border-radius: 8px; background: #fff; cursor: pointer; }
+  #bar button.primary { background: #7413dc; border-color: #7413dc; color: #fff; }
+  #bar label { display: flex; gap: 4px; align-items: center; font-size: 14px; }
+  #bar .hint { width: 100%; font-size: 12px; color: #555; }
+
+  /* A4 portrait minus 8 mm margins = 194 x 281 mm */
+  #sheet { width: 194mm; height: 281mm; background: #fff; display: flex; flex-direction: column; padding: 3mm;
+           box-shadow: 0 2px 14px rgba(0,0,0,.3); }
+  body.landscape #sheet { width: 281mm; height: 194mm; }
+  #head { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: .4mm solid #222;
+          padding-bottom: 1.5mm; margin-bottom: 2mm; }
+  #head h1 { margin: 0; font-size: 20px; }
+  #head .group { font-size: 15px; }
+  #mapWrap { position: relative; flex: 1; border: .4mm solid #222; }
+  #map { position: absolute; inset: 0; }
+  #gridSvg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 450; }
+  #gridSvg text { font-size: 11px; font-weight: 700; fill: #0a3d91; paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+  #foot { font-size: 10.5px; padding-top: 1.5mm; line-height: 1.35; }
+  #foot .credit { color: #555; font-size: 9px; margin-top: 1mm; }
+  .pin { width: 22px; height: 22px; border-radius: 50%; background: #7413dc; color: #fff; border: 2px solid #fff;
+         box-shadow: 0 1px 3px rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; font: 700 11px Arial; }
+
+  @media print {
+    body { background: #fff; padding: 0; display: block; }
+    #bar, .leaflet-control-zoom { display: none !important; }
+    #sheet { box-shadow: none; padding: 0; }
+  }
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <button class="primary" onclick="window.print()">🖨 Print</button>
+  <button id="fitBtn">⤢ Re-centre</button>
+  <button id="orientBtn">↻ Portrait / landscape</button>
+  <label><input type="checkbox" id="showPins"> Show snowmen (leader copy)</label>
+  <div class="hint">Pan and zoom inside the map to adjust the framing. Print one copy per group. Leave “Show snowmen” off for the scouts' maps: they navigate by grid reference.</div>
+</div>
+
+<div id="sheet">
+  <div id="head">
+    <h1>☃️ The Great Snowman Chip Hunt</h1>
+    <div class="group">Group: ____________</div>
+  </div>
+  <div id="mapWrap">
+    <div id="map"></div>
+    <svg id="gridSvg"></svg>
+  </div>
+  <div id="foot">
+    <b>Grid squares are 100 m.</b> To find a 6-figure grid reference, go <b>along the corridor, then up the stairs</b>.
+    The first two digits are the blue line number along the top/bottom (eastings). The third digit is how many tenths of the
+    way across the square. The last three digits are the same, using the numbers up the side (northings). For example, <b>284 231</b> means
+    4/10 of the way east of line 28 and 1/10 of the way north of line 23. This is a made-up grid, so it won't match an OS map.
+    <div class="credit">Map data © OpenStreetMap contributors. Snowman locations from Visit Bath. <i>Walking with The Snowman™</i> trail
+      by Wild in Art, brought to Bath by Bath BID in aid of Bath Area Play Project. Not affiliated.</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+"use strict";
+// Same grid as /chip-hike/ (default settings): 100 m squares, lines 00-99 from this origin.
+const GRID = { lat0: 51.360, lon0: -2.400, size: 100 };
+const M_PER_DEG_LAT = 110574, M_PER_DEG_LON = 111320 * Math.cos(GRID.lat0 * Math.PI / 180);
+const toXY = (lat, lon) => ({ x: (lon - GRID.lon0) * M_PER_DEG_LON, y: (lat - GRID.lat0) * M_PER_DEG_LAT });
+const fromXY = (x, y) => [GRID.lat0 + y / M_PER_DEG_LAT, GRID.lon0 + x / M_PER_DEG_LON];
+const pad2 = n => String(((n % 100) + 100) % 100).padStart(2, "0");
+
+// Walking with The Snowman trail, Bath 2026 (locations from Visit Bath)
+const SNOWMEN = [
+  [51.382833, -2.358340], [51.379967, -2.356991], [51.383149, -2.359375], [51.381827, -2.357871],
+  [51.382369, -2.360084], [51.384955, -2.361910], [51.380627, -2.361221], [51.379643, -2.359483],
+  [51.381985, -2.362270], [51.377725, -2.357423], [51.379063, -2.358643], [51.381517, -2.365381],
+];
+// Area to print, in grid metres: a little beyond all the snowmen on every side.
+const FRAME = { minX: 2300, maxX: 3150, minY: 1850, maxY: 2850 };
+
+const map = L.map("map", { zoomSnap: 0.25, zoomDelta: 0.25, zoomControl: false });
+L.control.zoom({ position: "bottomright" }).addTo(map);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+L.control.scale({ imperial: false, position: "topright" }).addTo(map);
+
+// ---------- Grid overlay ----------
+const svg = document.getElementById("gridSvg"), NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+function drawGrid() {
+  const { x: W, y: H } = map.getSize(), size = GRID.size;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = "";
+  const b = map.getBounds(), sw = toXY(b.getSouth(), b.getWest()), ne = toXY(b.getNorth(), b.getEast());
+  const g = el("g", {}), t = el("g", {});
+  for (let i = Math.ceil(sw.x / size); i * size <= ne.x; i++) {
+    const px = map.latLngToContainerPoint([GRID.lat0, fromXY(i * size, 0)[1]]).x, major = i % 10 === 0;
+    g.appendChild(el("line", { x1: px, x2: px, y1: 0, y2: H, stroke: "#0a3d91", "stroke-width": major ? 1.8 : 0.9, "stroke-opacity": major ? 0.95 : 0.7 }));
+    if (px > 22 && px < W - 30) {
+      t.appendChild(el("text", { x: px + 2, y: 12 }, pad2(i)));
+      t.appendChild(el("text", { x: px + 2, y: H - 20 }, pad2(i)));
+    }
+  }
+  for (let j = Math.ceil(sw.y / size); j * size <= ne.y; j++) {
+    const py = map.latLngToContainerPoint([fromXY(0, j * size)[0], GRID.lon0]).y, major = j % 10 === 0;
+    g.appendChild(el("line", { x1: 0, x2: W, y1: py, y2: py, stroke: "#0a3d91", "stroke-width": major ? 1.8 : 0.9, "stroke-opacity": major ? 0.95 : 0.7 }));
+    if (py > 24 && py < H - 34) {
+      t.appendChild(el("text", { x: 3, y: py - 3 }, pad2(j)));
+      t.appendChild(el("text", { x: W - 18, y: py - 3 }, pad2(j)));
+    }
+  }
+  svg.appendChild(g); svg.appendChild(t);
+}
+map.on("move zoom resize viewreset", drawGrid);
+map.on("zoomstart", () => svg.style.visibility = "hidden");
+map.on("zoomend", () => { svg.style.visibility = "visible"; drawGrid(); });
+
+// ---------- Optional snowman pins (leader copy only) ----------
+const pins = L.layerGroup(SNOWMEN.map((p, i) => L.marker(p, { interactive: false,
+  icon: L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11], html: `<div class="pin">${i + 1}</div>` }) })));
+document.getElementById("showPins").onchange = e => e.target.checked ? pins.addTo(map) : pins.remove();
+
+// ---------- Framing ----------
+function fit() {
+  map.invalidateSize();
+  map.fitBounds([fromXY(FRAME.minX, FRAME.minY), fromXY(FRAME.maxX, FRAME.maxY)], { padding: [0, 0] });
+  drawGrid();
+}
+document.getElementById("fitBtn").onclick = fit;
+document.getElementById("orientBtn").onclick = () => {
+  const land = document.body.classList.toggle("landscape");
+  document.getElementById("pageSize").textContent = `@page { size: A4 ${land ? "landscape" : "portrait"}; margin: 8mm; }`;
+  setTimeout(fit, 50);
+};
+fit();
+</script>
+</body>
+</html>
